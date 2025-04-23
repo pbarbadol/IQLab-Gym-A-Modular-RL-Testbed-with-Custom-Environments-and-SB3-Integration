@@ -15,8 +15,8 @@ except ImportError:
 STEP_PENALTY = -1          # Pequeña penalización por cada paso para fomentar eficiencia.
 NEW_CELL_REWARD = 20.0         # Recompensa por descubrir una nueva celda (compartida).
 WALL_COLLISION_PENALTY = -0.5 # Penalización por intentar moverse a una celda inválida.
-TERMINATE_EARLY_PENALTY = -5.0 # Penalización si un robot termina ANTES de completar el tablero.
-TERMINATE_LATE_REWARD = 0.1   # Pequeña recompensa si termina DESPUÉS de completar (opcional).
+TERMINATE_EARLY_PENALTY = 0.0 # Penalización si un robot termina ANTES de completar el tablero.
+TERMINATE_LATE_REWARD = 0.0   # Pequeña recompensa si termina DESPUÉS de completar (opcional).
 GOAL_COMPLETED_REWARD = 20.0  # Recompensa grande al completar el tablero (para los activos).
 FAILURE_PENALTY = -10.0       # Penalización si el episodio termina sin completar (todos terminan o max_steps).
 
@@ -25,7 +25,7 @@ QTableType = List[defaultdict]
 
 def inicializar_q_tables(num_robots: int) -> QTableType:
     """Inicializa la tabla Q para cada robot."""
-    
+
     # Cada robot tiene su propia Q-table, que es un defaultdict de defaultdicts
     # El primer defaultdict tiene como claves los estados (tuplas) y como valores otro defaultdict
     # que tiene como claves las acciones (índices) y como valores los Q-valores (float).
