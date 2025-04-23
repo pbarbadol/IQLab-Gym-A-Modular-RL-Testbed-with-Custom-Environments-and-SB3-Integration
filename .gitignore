@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+env/
+venv/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+
+# Archivos de configuración del editor
+.vscode/
+.idea/
+
+# Archivos de sistema (Windows/macOS)
+.DS_Store
+Thumbs.db
+
+# Archivos de logs y cachés
+*.log
+*.tmp
+*.cache
+*.sqlite3
+
+# Configuración de Jupyter/IPython
+.ipynb_checkpoints
+
+# Archivos de test/coverage
+htmlcov/
+.coverage
+.tox/
+.nox/
+pytest_cache/
+
+# Variables de entorno o credenciales
+*.env
+.env.*
