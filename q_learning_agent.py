@@ -12,13 +12,13 @@ except ImportError:
     raise
 
 # RECOMPENSAS Y PENALIZACIONES
-STEP_PENALTY = -1          # Pequeña penalización por cada paso para fomentar eficiencia.
-NEW_CELL_REWARD = 20.0         # Recompensa por descubrir una nueva celda (compartida).
+STEP_PENALTY = -10          # Pequeña penalización por cada paso para fomentar eficiencia.
+NEW_CELL_REWARD = 8.0         # Recompensa por descubrir una nueva celda (compartida).
 WALL_COLLISION_PENALTY = -0.5 # Penalización por intentar moverse a una celda inválida.
 TERMINATE_EARLY_PENALTY = 0.0 # Penalización si un robot termina ANTES de completar el tablero.
 TERMINATE_LATE_REWARD = 0.0   # Pequeña recompensa si termina DESPUÉS de completar (opcional).
-GOAL_COMPLETED_REWARD = 20.0  # Recompensa grande al completar el tablero (para los activos).
-FAILURE_PENALTY = -10.0       # Penalización si el episodio termina sin completar (todos terminan o max_steps).
+GOAL_COMPLETED_REWARD = 40.0  # Recompensa grande al completar el tablero (para los activos).
+FAILURE_PENALTY = -100.0       # Penalización si el episodio termina sin completar (todos terminan o max_steps).
 
 
 QTableType = List[defaultdict]
@@ -125,6 +125,7 @@ def calcular_recompensas(estado_previo: StateType,
         if celdas_nuevas_descubiertas_count > 0:
             recompensas[i] += NEW_CELL_REWARD * celdas_nuevas_descubiertas_count # Escalar por nº celdas?
 
+
         # 3. Penalización por colisión con pared/borde
         #    (Se detecta si intentó moverse pero sigue en la misma celda y no terminó)
         if pos_prev == pos_actual and accion_tomada != ACTION_TERMINATE_INDEX and not acaba_de_terminar:
@@ -146,7 +147,7 @@ def calcular_recompensas(estado_previo: StateType,
                  recompensas[i] += GOAL_COMPLETED_REWARD
             else:
                  # Fracaso: Terminó (max_steps o todos inactivos) sin completar
-                 recompensas[i] += FAILURE_PENALTY
+                 recompensas[i] += FAILURE_PENALTY * num_robots # Penaliza a todos los robots por igual (Realmente penaliza uno pero el promedio es el mismo)
 
     return recompensas
 

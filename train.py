@@ -1,27 +1,25 @@
-# train.py
+# train.py (modificado)
 
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+import pickle
+from collections import defaultdict, deque # Para la tasa de éxito móvil
 
-# --- Importar desde módulos ---
+# --- Importaciones (igual que antes) ---
 try:
-    from tablero import Tablero, StateType # Importa la clase y el tipo de estado
+    from tablero import Tablero, StateType
     from q_learning_agent import (
-        inicializar_q_tables,
-        elegir_acciones,
-        calcular_recompensas,
-        guardar_q_tables,
-        cargar_q_tables,
-        QTableType # Importa el tipo para anotaciones
+        inicializar_q_tables, elegir_acciones, calcular_recompensas, QTableType
     )
-    # Importar configuración
     import config
 except ImportError as e:
     print(f"Error importando módulos: {e}")
-    print("Asegúrate de que 'tablero.py', 'q_learning_agent.py' y 'config.py' estén en el mismo directorio o accesibles.")
     exit()
 
+
+# --- Tipo para las métricas ---
+MetricsDict = dict[str, list] # Diccionario donde las claves son nombres de métricas y los valores son listas
 
 def entrenar(env: Tablero,
              num_episodios: int,
@@ -32,231 +30,299 @@ def entrenar(env: Tablero,
              epsilon_end: float,
              epsilon_decay: float,
              log_interval: int = 100,
-             cargar_desde: str | None = None, # Ruta para cargar Q-tables pre-entrenadas
-             guardar_en: str | None = None   # Ruta para guardar Q-tables al final
-             ) -> tuple[QTableType, list[float]]:
+             cargar_desde: str | None = None,
+             guardar_en: str | None = None
+             ) -> tuple[QTableType, MetricsDict]: # Devuelve Q-tables y métricas
     """
-    Función principal para entrenar los agentes usando Independent Q-Learning (IQL).
-
-    Args:
-        env: Instancia del entorno Tablero.
-        num_episodios: Número total de episodios a ejecutar.
-        max_steps: Máximo número de pasos permitidos por episodio.
-        alpha: Tasa de aprendizaje.
-        gamma: Factor de descuento.
-        epsilon_start: Valor inicial de epsilon.
-        epsilon_end: Valor final (mínimo) de epsilon.
-        epsilon_decay: Factor de decaimiento de epsilon por episodio.
-        log_interval: Cada cuántos episodios imprimir información.
-        cargar_desde: Nombre del archivo .pkl desde donde cargar Q-tables existentes (opcional).
-        guardar_en: Nombre del archivo .pkl donde guardar las Q-tables finales (opcional).
-
-
-    Returns:
-        Una tupla conteniendo:
-        - La lista de Q-tables aprendidas (una por robot).
-        - Una lista con la recompensa promedio por episodio durante el entrenamiento.
+    Entrena agentes IQL y recopila métricas detalladas.
     """
-
+    # --- Inicialización (Q-Tables, Epsilon) ---
     if cargar_desde:
-        # Intentar cargar Q-tables desde el archivo especificado
-        q_tables = cargar_q_tables(env.num_robots, cargar_desde)
-        print(f"Funcionalidad de carga no implementada/descomentada. Iniciando Q-tables vacías.")
-        q_tables = inicializar_q_tables(env.num_robots)
+        print(f"Intentando cargar Q-Tables desde {cargar_desde}...")
+        # ... (lógica de carga, similar a visualize_sim.py) ...
+        # q_tables = cargar_q_tables_visual(env.num_robots, cargar_desde) # Reusar si se adaptó
+        # if q_tables is None:
+        q_tables = inicializar_q_tables(env.num_robots) # Fallback
     else:
         q_tables = inicializar_q_tables(env.num_robots)
-
     epsilon = epsilon_start
-    historico_recompensas_episodio = [] # Guarda recompensa promedio de cada episodio
+
+    # --- Inicialización de Métricas ---
+    metrics: MetricsDict = {
+        "episodio": [],
+        "recompensa_promedio": [],
+        "pasos_por_episodio": [],
+        "epsilon": [],
+        "porcentaje_visitadas": [],
+        "tasa_exito_100ep": [], # Tasa de éxito en los últimos 100 episodios
+        "q_table_size_total": [], # Tamaño total (suma de tamaños individuales)
+        "td_error_promedio": [] # Opcional: Error TD promedio
+    }
+    # Buffer para calcular tasa de éxito móvil
+    ultimos_100_completados = deque(maxlen=log_interval)
 
     print(f"--- Iniciando Entrenamiento ({num_episodios} episodios) ---")
     start_time = time.time()
 
     for episodio in range(num_episodios):
-        estado = env.reset() # Obtiene estado inicial ((pos), frozenset(visit), (activos))
-        recompensa_acumulada_episodio = np.zeros(env.num_robots) # Usar numpy array es eficiente
+        estado = env.reset()
+        recompensa_acumulada_episodio = np.zeros(env.num_robots)
         done = False
         paso = 0
+        episodio_completado = False # Flag para saber si se completó el tablero
+        td_error_sum = 0.0         # Para calcular error TD promedio
+        update_count = 0           # Contador de actualizaciones Q
 
-        # Bucle principal de un episodio
+        # --- Bucle de un episodio ---
         while not done and paso < max_steps:
             paso += 1
-
-            # 1. Elegir acciones para todos los robots activos
             acciones = elegir_acciones(q_tables, estado, epsilon, env)
-
-            # Guardar estado previo antes de ejecutar el paso
             estado_previo = estado
-
-            # 2. Ejecutar las acciones en el entorno
             estado_siguiente, done = env.step(acciones)
-
-            # 3. Calcular las recompensas individuales
             recompensas = calcular_recompensas(estado_previo, estado_siguiente, acciones, done, env)
 
-            # 4. Actualizar las Q-tables para cada robot que estaba activo ANTES del paso
             for i in range(env.num_robots):
-                # Solo actualizar si el robot 'i' estaba activo en el estado PREVIO
-                if estado_previo[2][i]:
+                if estado_previo[2][i]: # Si el robot estaba activo
                     accion_tomada = acciones[i]
                     recompensa_recibida = recompensas[i]
-
-                    # Valor Q antiguo
-                    q_antiguo = q_tables[i][estado_previo].get(accion_tomada, 0.0) # Usar .get
-
-                    # Calcular el mejor valor Q para el estado siguiente (max_a' Q(s', a'))
-                    # Es 0 si el episodio terminó (done=True) o si el robot 'i' ya no está activo en s'
+                    q_antiguo = q_tables[i][estado_previo].get(accion_tomada, 0.0)
                     mejor_q_siguiente = 0.0
                     if not done and estado_siguiente[2][i]:
                         acciones_validas_siguiente = env.get_valid_actions(i)
                         if acciones_validas_siguiente:
                             q_valores_siguientes = q_tables[i][estado_siguiente]
-                            # Obtener Q-valores para acciones válidas, default a 0
                             q_validos = [q_valores_siguientes.get(a, 0.0) for a in acciones_validas_siguiente]
                             if q_validos:
                                 mejor_q_siguiente = max(q_validos)
 
-                    # Fórmula de actualización Q-Learning
+                    # Calcular TD Error ANTES de actualizar
                     delta = recompensa_recibida + gamma * mejor_q_siguiente - q_antiguo
-                    q_tables[i][estado_previo][accion_tomada] = q_antiguo + alpha * delta
+                    td_error_sum += abs(delta)
+                    update_count += 1
 
-                    # Acumular recompensa para estadísticas del episodio
+                    # Actualizar Q-table
+                    q_tables[i][estado_previo][accion_tomada] = q_antiguo + alpha * delta
                     recompensa_acumulada_episodio[i] += recompensa_recibida
 
-            # Actualizar estado para el siguiente paso
             estado = estado_siguiente
+            # Comprobar si se completó el tablero en este paso (para tasa de éxito)
+            if not episodio_completado and len(estado[1]) == env.total_celdas:
+                episodio_completado = True
 
-        # --- Fin del episodio ---
-        recompensa_promedio_episodio = np.mean(recompensa_acumulada_episodio)
-        historico_recompensas_episodio.append(recompensa_promedio_episodio)
+        # --- Fin del episodio - Recopilar Métricas ---
+        metrics["episodio"].append(episodio + 1)
+        metrics["recompensa_promedio"].append(np.mean(recompensa_acumulada_episodio))
+        metrics["pasos_por_episodio"].append(paso)
+        metrics["epsilon"].append(epsilon)
+        metrics["porcentaje_visitadas"].append(len(estado[1]) / env.total_celdas * 100)
+        ultimos_100_completados.append(episodio_completado)
+        tasa_exito_actual = sum(ultimos_100_completados) / len(ultimos_100_completados)
+        metrics["tasa_exito_100ep"].append(tasa_exito_actual)
+
+        # Calcular tamaño Q-table periódicamente (no en cada paso, puede ser lento)
+        if (episodio + 1) % log_interval == 0:
+             size_total = sum(len(q_t) for q_t in q_tables)
+             metrics["q_table_size_total"].append(size_total)
+             # Añadir NaNs para los episodios intermedios para mantener longitud de lista
+             metrics["q_table_size_total"].extend([np.nan] * (log_interval - 1))
+        # Asegurarse de que la lista tenga la longitud correcta al final si no es múltiplo
+        if episodio == num_episodios - 1 and len(metrics["q_table_size_total"]) < num_episodios:
+             size_total = sum(len(q_t) for q_t in q_tables)
+             missing_count = num_episodios - len(metrics["q_table_size_total"])
+             metrics["q_table_size_total"].extend([np.nan] * (missing_count - 1) + [size_total])
+
+
+        # Calcular Error TD promedio
+        avg_td_error = (td_error_sum / update_count) if update_count > 0 else 0.0
+        metrics["td_error_promedio"].append(avg_td_error)
+
 
         # Decaimiento de Epsilon
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
 
-        # Imprimir progreso
+        # --- Imprimir Log ---
         if (episodio + 1) % log_interval == 0:
             tiempo_transcurrido = time.time() - start_time
-            tiempo_estimado_restante = (tiempo_transcurrido / (episodio + 1)) * (num_episodios - (episodio + 1))
-            media_reciente = np.mean(historico_recompensas_episodio[-log_interval:])
             print(f"Ep: {episodio+1}/{num_episodios} | "
-                  f"Pasos: {paso} | Done: {done} | "
-                  f"Eps: {epsilon:.4f} | Rec Reciente: {media_reciente:.3f} | "
-                  f"T: {tiempo_transcurrido:.1f}s / ~{(tiempo_transcurrido+tiempo_estimado_restante)/60:.1f}m")
+                  #f"Pasos: {np.mean(metrics['pasos_por_episodio'][-log_interval:]):.1f} | " # Promedio pasos reciente
+                  f"Exito: {tasa_exito_actual*100:.1f}% | "
+                  f"Visit: {np.mean(metrics['porcentaje_visitadas'][-log_interval:]):.1f}% | "
+                  f"Eps: {epsilon:.4f} | Rec: {np.mean(metrics['recompensa_promedio'][-log_interval:]):.3f} | "
+                  #f"QSize: {size_total} | " # Mostrar tamaño si se calculó
+                  f"T: {tiempo_transcurrido:.1f}s")
 
     # --- Fin del Entrenamiento ---
+    # Asegurarse de que todas las listas de métricas tengan la misma longitud
+    final_len = num_episodios
+    for key in metrics:
+        # Rellenar tamaño de Q-table si es necesario
+        if key == "q_table_size_total":
+             last_valid_size = metrics[key][-1] if metrics[key] else 0
+             while len(metrics[key]) < final_len:
+                  metrics[key].append(last_valid_size) # Propagar último tamaño conocido
+        # Verificar otras listas (no debería ser necesario con este código)
+        # elif len(metrics[key]) < final_len:
+        #      print(f"Advertencia: Métrica '{key}' tiene longitud {len(metrics[key])}, esperaba {final_len}")
+        #      # Rellenar con NaN o último valor si es apropiado
+        #      metrics[key].extend([np.nan] * (final_len - len(metrics[key])))
+
+
     tiempo_total = time.time() - start_time
     print(f"--- Entrenamiento Finalizado en {tiempo_total:.2f} segundos ---")
 
-    # Guardar Q-Tables
+    # --- Guardado (igual que antes) ---
     if guardar_en:
-         guardar_q_tables(q_tables, guardar_en)
+         try:
+             with open(guardar_en, 'wb') as f:
+                 q_tables_serializable = [{k: dict(v) for k, v in q_t.items()} for q_t in q_tables]
+                 pickle.dump(q_tables_serializable, f)
+             print(f"Q-Tables guardadas en {guardar_en}")
+         except Exception as e:
+             print(f"Error al guardar Q-Tables con pickle: {e}")
 
-    return q_tables, historico_recompensas_episodio
-
-def evaluar_politica(env: Tablero,
-                       q_tables: QTableType,
-                       max_steps: int,
-                       render: bool = True,
-                       pause: float = 0.3):
-    """Ejecuta un episodio usando la política aprendida (epsilon=0)."""
-    print("\n--- Evaluación de la Política Aprendida (Epsilon = 0) ---")
-    estado = env.reset()
-    if render:
-        env.render()
-        time.sleep(pause * 2) # Pausa inicial
-
-    done = False
-    paso = 0
-    recompensa_total_eval = np.zeros(env.num_robots)
-
-    while not done and paso < max_steps:
-        paso += 1
-        # Elegir acciones determinísticamente (epsilon=0)
-        acciones = elegir_acciones(q_tables, estado, 0.0, env)
-
-        # Ejecutar paso
-        estado_siguiente, done = env.step(acciones)
-
-        # Calcular recompensas solo para info (no se usan para aprender)
-        recompensas = calcular_recompensas(estado, estado_siguiente, acciones, done, env)
-        recompensa_total_eval += recompensas
-
-        # Actualizar estado
-        estado = estado_siguiente
-
-        # Renderizar
-        if render:
-            print(f"\nPaso {paso} | Acciones: {acciones} | Recompensas: [{', '.join(f'{r:.2f}' for r in recompensas)}]")
-            env.render()
-            if pause > 0:
-                time.sleep(pause)
-
-    print("\n--- Fin Evaluación ---")
-    print(f"Episodio terminado en {paso} pasos. Done={done}")
-    print(f"Recompensa total acumulada en evaluación: {recompensa_total_eval} (Promedio: {np.mean(recompensa_total_eval):.2f})")
-    print(f"Celdas visitadas: {len(estado[1])}/{env.total_celdas}")
+    return q_tables, metrics
 
 
-# --- Bloque Principal de Ejecución ---
+# --- Bloque Principal (modificado para graficar métricas) ---
 if __name__ == "__main__":
-    # Crear el entorno usando la configuración
-    entorno = Tablero(filas=config.FILAS,
-                      columnas=config.COLUMNAS,
-                      num_robots=config.N_ROBOTS,
-                      posicion_inicial=config.POSICION_INICIAL)
+    entorno = Tablero(filas=config.FILAS, columnas=config.COLUMNAS,
+                      num_robots=config.N_ROBOTS, posicion_inicial=config.POSICION_INICIAL)
 
-    # Entrenar a los agentes
-    q_tables_finales, historial_recompensas = entrenar(
+    q_tables_finales, metrics_data = entrenar(
         env=entorno,
         num_episodios=config.NUM_EPISODIOS,
         max_steps=config.MAX_STEPS_PER_EPISODE,
-        alpha=config.ALPHA,
-        gamma=config.GAMMA,
-        epsilon_start=config.EPSILON_START,
-        epsilon_end=config.EPSILON_END,
+        alpha=config.ALPHA, gamma=config.GAMMA,
+        epsilon_start=config.EPSILON_START, epsilon_end=config.EPSILON_END,
         epsilon_decay=config.EPSILON_DECAY,
         log_interval=config.EPISODIOS_PARA_LOG,
-        # cargar_desde=config.CARGAR_QTABLES_FILENAME, # Descomentar para cargar
-        guardar_en=config.GUARDAR_QTABLES_FILENAME     # Guardará al final
+        guardar_en=config.GUARDAR_QTABLES_FILENAME
     )
 
-    # Generar gráfico si está habilitado
+    # --- Graficar Métricas ---
     if config.GENERAR_GRAFICO:
-        try:
-            plt.figure(figsize=(12, 6))
-            plt.plot(historial_recompensas, alpha=0.6, label='Recompensa Promedio por Episodio')
-            # Calcular y graficar promedio móvil
-            if len(historial_recompensas) >= config.VENTANA_PROMEDIO_MOVIL:
-                promedio_movil = np.convolve(historial_recompensas,
-                                             np.ones(config.VENTANA_PROMEDIO_MOVIL)/config.VENTANA_PROMEDIO_MOVIL,
-                                             mode='valid')
-                plt.plot(np.arange(len(promedio_movil)) + config.VENTANA_PROMEDIO_MOVIL - 1,
-                         promedio_movil,
-                         label=f'Promedio Móvil ({config.VENTANA_PROMEDIO_MOVIL} ep)',
-                         color='red', linewidth=2)
+        num_plots = 5 # Número de métricas a graficar
+        fig, axs = plt.subplots(num_plots, 1, figsize=(10, 15), sharex=True) # Compartir eje X
 
-            plt.xlabel('Episodio')
-            plt.ylabel('Recompensa Promedio')
-            plt.title('Progreso del Entrenamiento Q-Learning')
-            plt.legend()
-            plt.grid(True)
-            plt.ylim(bottom=min(historial_recompensas) - abs(min(historial_recompensas)*0.1) if historial_recompensas else -1) # Ajustar eje Y
-            plt.tight_layout()
-            plt.savefig("training_rewards.png") # Guardar gráfico
-            print("\nGráfico de recompensas guardado como 'training_rewards.png'")
-            # plt.show() # Descomentar para mostrar interactivamente
-        except Exception as e:
-            print(f"\nError al generar/guardar el gráfico: {e}")
-            print("Asegúrate de tener matplotlib instalado: pip install matplotlib numpy")
+        episodes = metrics_data['episodio']
+        ventana = config.VENTANA_PROMEDIO_MOVIL
 
-    # Evaluar la política aprendida si está habilitado
+        # Función auxiliar para promedio móvil
+        def moving_average(data, w):
+            if len(data) < w: return None # No calcular si no hay suficientes datos
+            return np.convolve(data, np.ones(w)/w, mode='valid')
+
+        # 1. Recompensa Promedio
+        axs[0].plot(episodes, metrics_data['recompensa_promedio'], alpha=0.5, label='Recompensa Prom.')
+        avg = moving_average(metrics_data['recompensa_promedio'], ventana)
+        if avg is not None: axs[0].plot(episodes[ventana-1:], avg, color='red', label=f'Prom. Móvil {ventana}ep')
+        axs[0].set_ylabel('Recompensa Prom.')
+        axs[0].legend()
+        axs[0].grid(True)
+
+        # 2. Pasos por Episodio
+        axs[1].plot(episodes, metrics_data['pasos_por_episodio'], alpha=0.5, label='Pasos')
+        avg = moving_average(metrics_data['pasos_por_episodio'], ventana)
+        if avg is not None: axs[1].plot(episodes[ventana-1:], avg, color='red', label=f'Prom. Móvil {ventana}ep')
+        axs[1].set_ylabel('Pasos')
+        axs[1].legend()
+        axs[1].grid(True)
+
+        # 3. Porcentaje Visitadas
+        axs[2].plot(episodes, metrics_data['porcentaje_visitadas'], alpha=0.5, label='% Visitadas')
+        avg = moving_average(metrics_data['porcentaje_visitadas'], ventana)
+        if avg is not None: axs[2].plot(episodes[ventana-1:], avg, color='red', label=f'Prom. Móvil {ventana}ep')
+        axs[2].set_ylabel('% Visitadas')
+        axs[2].set_ylim(0, 105) # Eje Y de 0 a 100+
+        axs[2].legend()
+        axs[2].grid(True)
+
+        # 4. Tasa de Éxito
+        axs[3].plot(episodes, metrics_data['tasa_exito_100ep'], label=f'Tasa Éxito ({config.EPISODIOS_PARA_LOG}ep)')
+        axs[3].set_ylabel('Tasa Éxito (%)')
+        axs[3].set_ylim(-0.05, 1.05) # Eje Y de 0 a 1
+        axs[3].legend()
+        axs[3].grid(True)
+
+        # 5. Epsilon
+        axs[4].plot(episodes, metrics_data['epsilon'], label='Epsilon')
+        axs[4].set_ylabel('Epsilon')
+        axs[4].set_xlabel('Episodio')
+        axs[4].legend()
+        axs[4].grid(True)
+
+        # # 6. Opcional: Tamaño Q-Table (puede necesitar eje Y separado si escala mucho)
+        # ax6 = axs[4].twinx() # Eje Y secundario
+        # # Interpolar NaNs para graficar línea continua donde hay datos
+        # q_size_series = pd.Series(metrics_data['q_table_size_total']).interpolate(method='linear')
+        # ax6.plot(episodes, q_size_series, label='Tamaño Q-Table (Total)', color='purple', linestyle=':')
+        # ax6.set_ylabel('Tamaño Q-Table', color='purple')
+        # ax6.tick_params(axis='y', labelcolor='purple')
+        # ax6.legend(loc='lower right')
+
+        fig.suptitle('Métricas de Entrenamiento Q-Learning', fontsize=16)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Ajustar para título
+        plt.savefig("training_metrics.png")
+        print("\nGráfico de métricas guardado como 'training_metrics.png'")
+        # plt.show()
+
+    # --- Evaluación (igual que antes) ---
     if config.EVALUAR_AL_FINAL and q_tables_finales:
-         # Necesitamos convertir las Q-tables guardadas (dicts) de nuevo a defaultdict si las cargamos
-         # Si no las cargamos, ya son defaultdicts. Asumimos que son defaultdicts aquí.
-         evaluar_politica(
-             env=entorno,
-             q_tables=q_tables_finales,
-             max_steps=config.MAX_STEPS_EVALUACION,
-             render=config.RENDER_EVALUACION,
-             pause=config.PAUSA_RENDER_EVAL
-         )
+        # Reconstruir Q-tables a defaultdict si se cargaron desde pickle
+        q_tables_eval = inicializar_q_tables(entorno.num_robots)
+        if isinstance(q_tables_finales[0], dict): # Chequea si son dicts normales
+             print("Convirtiendo Q-tables cargadas a defaultdict para evaluación...")
+             for i in range(entorno.num_robots):
+                 for state_tuple, action_values_dict in q_tables_finales[i].items():
+                     action_defaultdict = defaultdict(float, action_values_dict)
+                     q_tables_eval[i][state_tuple] = action_defaultdict
+        else: # Asume que ya son defaultdicts (si no se cargaron)
+             q_tables_eval = q_tables_finales
+
+        # Importar función evaluar_politica si la moviste a otro lado, o copiarla aquí
+        try:
+             # Intenta importar si la pusiste en utils o similar
+             from q_learning_agent import evaluar_politica
+        except ImportError:
+            # Copia la función evaluar_politica aquí si no está importable
+            def evaluar_politica(env: Tablero, q_tables: QTableType, max_steps: int, render: bool = True, pause: float = 0.3):
+                print("\n--- Evaluación de la Política Aprendida (Epsilon = 0) ---")
+                estado = env.reset()
+                if render:
+                    try:
+                        env.render()
+                        time.sleep(pause * 2)
+                    except AttributeError:
+                        print("Advertencia: El método render() no está implementado en Tablero.")
+                        render = False # Desactivar render si no existe
+
+                done = False
+                paso = 0
+                recompensa_total_eval = np.zeros(env.num_robots)
+
+                while not done and paso < max_steps:
+                    paso += 1
+                    acciones = elegir_acciones(q_tables, estado, 0.0, env)
+                    estado_siguiente, done = env.step(acciones)
+                    recompensas = calcular_recompensas(estado, estado_siguiente, acciones, done, env)
+                    recompensa_total_eval += recompensas
+                    estado = estado_siguiente
+
+                    if render:
+                        print(f"\nPaso {paso} | Acciones: {acciones} | Recompensas: [{', '.join(f'{r:.2f}' for r in recompensas)}]")
+                        env.render()
+                        if pause > 0: time.sleep(pause)
+
+                print("\n--- Fin Evaluación ---")
+                print(f"Terminado en {paso} pasos. Done={done}")
+                print(f"Recompensa total: {recompensa_total_eval} (Promedio: {np.mean(recompensa_total_eval):.2f})")
+                print(f"Celdas visitadas: {len(estado[1])}/{env.total_celdas}")
+        # Fin de la copia de evaluar_politica (si fue necesaria)
+
+        evaluar_politica(
+            env=entorno,
+            q_tables=q_tables_eval, # Usar las Q-tables potencialmente convertidas
+            max_steps=config.MAX_STEPS_EVALUACION,
+            render=config.RENDER_EVALUACION,
+            pause=config.PAUSA_RENDER_EVAL
+        )

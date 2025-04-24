@@ -10,14 +10,14 @@ POSICION_INICIAL = None
 
 # --- Hiperparámetros de Q-Learning ---
 ALPHA = 0.1                   # Tasa de aprendizaje (Learning Rate) - Qué tanto aprende de la nueva info
-GAMMA = 0.9                   # Factor de descuento (Discount Factor) - Importancia de recompensas futuras
+GAMMA = 0.999                   # Factor de descuento (Discount Factor) - Importancia de recompensas futuras
 EPSILON_START = 1.0           # Tasa de exploración inicial (100% aleatorio al principio)
 EPSILON_END = 0.01            # Tasa de exploración final (mínimo 1% de exploración)
 EPSILON_DECAY = 0.9995        # Factor de decaimiento de epsilon por episodio (más lento = más exploración)
 
 # --- Configuración del Entrenamiento ---
-NUM_EPISODIOS = 100000         # Número total de episodios de entrenamiento
-MAX_STEPS_PER_EPISODE = 150   # Límite de pasos por episodio (evita bucles infinitos)
+NUM_EPISODIOS = 50000         # Número total de episodios de entrenamiento
+MAX_STEPS_PER_EPISODE = 64   # Límite de pasos por episodio (evita bucles infinitos)
 
 # --- Configuración Adicional ---
 EPISODIOS_PARA_LOG = 100      # Cada cuántos episodios imprimir progreso
