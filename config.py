@@ -1,9 +1,9 @@
 # config.py
 
 # --- Configuración del Entorno ---
-FILAS = 5                     # Número de filas del tablero
-COLUMNAS = 5                  # Número de columnas del tablero
-N_ROBOTS = 2                  # Número de robots
+FILAS = 8                     # Número de filas del tablero
+COLUMNAS = 8                  # Número de columnas del tablero
+N_ROBOTS = 3                  # Número de robots
 # Posición inicial opcional (None para empezar todos en (0,0))
 #POSICION_INICIAL = [(0, 0), (FILAS - 1, COLUMNAS - 1)]
 POSICION_INICIAL = None
