@@ -9,11 +9,11 @@ N_ROBOTS = 3                  # Número de robots
 POSICION_INICIAL = None
 
 # --- Hiperparámetros de Q-Learning ---
-ALPHA = 0.1                   # Tasa de aprendizaje (Learning Rate) - Qué tanto aprende de la nueva info
-GAMMA = 0.999                   # Factor de descuento (Discount Factor) - Importancia de recompensas futuras
+ALPHA = 0.05532#0.1                   # Tasa de aprendizaje (Learning Rate) - Qué tanto aprende de la nueva info
+GAMMA = 0.95255#0.999                   # Factor de descuento (Discount Factor) - Importancia de recompensas futuras
 EPSILON_START = 1.0           # Tasa de exploración inicial (100% aleatorio al principio)
 EPSILON_END = 0.01            # Tasa de exploración final (mínimo 1% de exploración)
-EPSILON_DECAY = 0.9995        # Factor de decaimiento de epsilon por episodio (más lento = más exploración)
+EPSILON_DECAY = 0.99904#0.9995        # Factor de decaimiento de epsilon por episodio (más lento = más exploración)
 
 # --- Configuración del Entrenamiento ---
 NUM_EPISODIOS = 50000         # Número total de episodios de entrenamiento

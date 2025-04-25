@@ -1,6 +1,7 @@
 import random
 import pickle
-
+import time
+import numpy as np
 from collections import defaultdict
 from typing import List
 
@@ -182,3 +183,36 @@ def cargar_q_tables(num_robots: int, filename: str = "q_tables.pkl") -> QTableTy
     except Exception as e:
         print(f"Error al cargar Q-Tables: {e}. Inicializando Q-tables vacías.")
         return inicializar_q_tables(num_robots)
+    
+def evaluar_politica(env: Tablero, q_tables: QTableType, max_steps: int, render: bool = True, pause: float = 0.3):
+                    print("\n--- Evaluación de la Política Aprendida (Epsilon = 0) ---")
+                    estado = env.reset()
+                    if render:
+                        try:
+                            env.render()
+                            time.sleep(pause * 2)
+                        except AttributeError:
+                            print("Advertencia: El método render() no está implementado en Tablero.")
+                            render = False # Desactivar render si no existe
+
+                    done = False
+                    paso = 0
+                    recompensa_total_eval = np.zeros(env.num_robots)
+
+                    while not done and paso < max_steps:
+                        paso += 1
+                        acciones = elegir_acciones(q_tables, estado, 0.0, env)
+                        estado_siguiente, done = env.step(acciones)
+                        recompensas = calcular_recompensas(estado, estado_siguiente, acciones, done, env)
+                        recompensa_total_eval += recompensas
+                        estado = estado_siguiente
+
+                        if render:
+                            print(f"\nPaso {paso} | Acciones: {acciones} | Recompensas: [{', '.join(f'{r:.2f}' for r in recompensas)}]")
+                            env.render()
+                            if pause > 0: time.sleep(pause)
+
+                    print("\n--- Fin Evaluación ---")
+                    print(f"Terminado en {paso} pasos. Done={done}")
+                    print(f"Recompensa total: {recompensa_total_eval} (Promedio: {np.mean(recompensa_total_eval):.2f})")
+                    print(f"Celdas visitadas: {len(estado[1])}/{env.total_celdas}")

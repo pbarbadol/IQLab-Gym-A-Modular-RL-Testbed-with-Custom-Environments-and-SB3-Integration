@@ -38,3 +38,6 @@ pytest_cache/
 # Variables de entorno o credenciales
 *.env
 .env.*
+
+# Archivos de documentación
+results/
