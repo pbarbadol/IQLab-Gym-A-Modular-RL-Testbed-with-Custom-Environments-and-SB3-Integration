@@ -40,4 +40,4 @@ pytest_cache/
 .env.*
 
 # Archivos de documentación
-results/
+results*/
