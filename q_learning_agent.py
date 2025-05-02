@@ -20,6 +20,8 @@ TERMINATE_EARLY_PENALTY = 0.0 # Penalización si un robot termina ANTES de compl
 TERMINATE_LATE_REWARD = 0.0   # Pequeña recompensa si termina DESPUÉS de completar (opcional).
 GOAL_COMPLETED_REWARD = 40.0  # Recompensa grande al completar el tablero (para los activos).
 FAILURE_PENALTY = -100.0       # Penalización si el episodio termina sin completar (todos terminan o max_steps).
+BATTERY_DEPLETED_PENALTY = -50.0 # Penalización MUY GRANDE por quedarse sin batería
+CHARGE_REWARD = 0.5             # Pequeña recompensa por llegar a la estación de carga
 
 
 QTableType = List[defaultdict]
@@ -82,73 +84,65 @@ def elegir_acciones(q_tables: QTableType, estado: StateType, epsilon: float, env
 def calcular_recompensas(estado_previo: StateType,
                          estado_actual: StateType,
                          acciones: List[int],
-                         done: bool, # Indica si el episodio TERMINÓ en este paso
+                         done: bool,
                          env: Tablero) -> List[float]:
-    """
-    Calcula la recompensa para CADA robot basada en la transición de estado.
-    Esta función define el objetivo del aprendizaje.
-
-    Args:
-        estado_previo: El estado completo ANTES de ejecutar las acciones.
-        estado_actual: El estado completo DESPUÉS de ejecutar las acciones.
-        acciones: La lista de acciones ejecutadas por cada robot.
-        done: True si el episodio ha finalizado en este paso (por cualquier razón).
-        env: La instancia del entorno 'Tablero'.
-
-    Returns:
-        Una lista de recompensas (float), una para cada robot.
-    """
+    """Calcula recompensas considerando la batería."""
     num_robots = env.num_robots
     recompensas = [0.0] * num_robots
 
-    posiciones_previas, visitadas_previas, activos_previos = estado_previo
-    posiciones_actuales, visitadas_actuales, activos_actuales = estado_actual
+    pos_prev, visit_prev, act_prev, bat_prev = estado_previo
+    pos_act, visit_act, act_act, bat_act = estado_actual
 
-    # --- Variables útiles para la lógica de recompensa ---
-    celdas_nuevas_descubiertas_count = len(visitadas_actuales) - len(visitadas_previas)
-    completado_ahora = len(visitadas_actuales) == env.total_celdas
+    celdas_nuevas_count = len(visit_act) - len(visit_prev)
+    completado_ahora = len(visit_act) == env.total_celdas
+    fallo_bateria_ocurrido = any(not act_act[i] and act_prev[i] and bat_act[i] == 0 for i in range(num_robots))
 
     for i in range(num_robots):
-        # Solo calcular recompensa si el robot estaba activo ANTES de este paso
-        if not activos_previos[i]:
-            continue # Sin recompensa ni penalización si ya estaba inactivo
+        if not act_prev[i]: continue # Robot ya inactivo previamente
 
         accion_tomada = acciones[i]
-        pos_prev = posiciones_previas[i]
-        pos_actual = posiciones_actuales[i]
-        acaba_de_terminar = not activos_actuales[i] # True si terminó en ESTE paso
+        pos_anterior = pos_prev[i]
+        pos_ahora = pos_act[i]
+        acaba_de_terminar_accion = (accion_tomada == ACTION_TERMINATE_INDEX)
+        acaba_de_fallar_bateria = (not act_act[i] and bat_act[i] == 0) # Falló en este paso
 
-        # 1. Penalización base por paso
+        # --- Penalizaciones/Recompensas ---
+
+        # Penalización MUY GRANDE si falla por batería
+        if acaba_de_fallar_bateria:
+            recompensas[i] += BATTERY_DEPLETED_PENALTY
+            # Si falla por batería, otras recompensas/penalizaciones pueden no aplicar tanto
+            # ya que el episodio termina abruptamente para este robot.
+            continue # Ir al siguiente robot
+
+        # Penalización base por paso (si no falló por batería)
         recompensas[i] += STEP_PENALTY
 
-        # 2. Recompensa por descubrir celdas NUEVAS (compartida)
-        #    Se da si *cualquier* robot descubrió algo nuevo.
-        if celdas_nuevas_descubiertas_count > 0:
-            recompensas[i] += NEW_CELL_REWARD * celdas_nuevas_descubiertas_count # Escalar por nº celdas?
+        # Recompensa compartida por descubrir celdas
+        if celdas_nuevas_count > 0:
+            recompensas[i] += NEW_CELL_REWARD * celdas_nuevas_count
 
-
-        # 3. Penalización por colisión con pared/borde
-        #    (Se detecta si intentó moverse pero sigue en la misma celda y no terminó)
-        if pos_prev == pos_actual and accion_tomada != ACTION_TERMINATE_INDEX and not acaba_de_terminar:
+        # Penalización colisión pared/borde (si no terminó por acción o batería)
+        if pos_anterior == pos_ahora and not acaba_de_terminar_accion and act_act[i]:
              recompensas[i] += WALL_COLLISION_PENALTY
 
-        # 4. Penalización/Recompensa relacionada con 'Terminar'
-        if acaba_de_terminar:
+        # Recompensa por recargar
+        if pos_ahora == env.posicion_carga and bat_act[i] == env.bateria_maxima and bat_prev[i] < env.bateria_maxima:
+             recompensas[i] += CHARGE_REWARD
+
+        # Penalización/Recompensa por terminar (acción 4)
+        if acaba_de_terminar_accion:
             if completado_ahora:
-                 # Terminó justo cuando se completó o después
                  recompensas[i] += TERMINATE_LATE_REWARD
             else:
-                 # Terminó antes de que se completara el tablero
                  recompensas[i] += TERMINATE_EARLY_PENALTY
 
-        # 5. Recompensa/Penalización GRANDE al final del episodio
-        if done: # Si el episodio termina en este paso
+        # Recompensas/Penalizaciones de Fin de Episodio (si no falló por batería)
+        if done:
             if completado_ahora:
-                 # Éxito: El tablero se completó
                  recompensas[i] += GOAL_COMPLETED_REWARD
-            else:
-                 # Fracaso: Terminó (max_steps o todos inactivos) sin completar
-                 recompensas[i] += FAILURE_PENALTY * num_robots # Penaliza a todos los robots por igual (Realmente penaliza uno pero el promedio es el mismo)
+            elif not fallo_bateria_ocurrido: # Penalizar si termina sin completar y SIN fallo batería
+                 recompensas[i] += FAILURE_PENALTY
 
     return recompensas
 

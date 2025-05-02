@@ -8,6 +8,11 @@ N_ROBOTS = 3                  # Número de robots
 #POSICION_INICIAL = [(0, 0), (FILAS - 1, COLUMNAS - 1)]
 POSICION_INICIAL = None
 
+# --- Configuración de Batería y Carga ---
+POSICION_CARGA = (0, 0)         # Coordenadas (fila, columna) de la estación
+BATERIA_MAXIMA = 100           # Capacidad máxima de la batería
+BATERIA_INICIAL = 100          # Batería al inicio del episodio
+
 # --- Hiperparámetros de Q-Learning ---
 ALPHA = 0.05532#0.1                   # Tasa de aprendizaje (Learning Rate) - Qué tanto aprende de la nueva info
 GAMMA = 0.95255#0.999                   # Factor de descuento (Discount Factor) - Importancia de recompensas futuras

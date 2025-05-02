@@ -166,8 +166,16 @@ def main():
         sys.exit()
 
     # Crear el entorno
-    env = Tablero(filas=filas, columnas=columnas, num_robots=num_robots,
-                  posicion_inicial=config.POSICION_INICIAL)
+    # En train.py y visualize_sim.py
+    env = Tablero(
+        filas=config.FILAS,
+        columnas=config.COLUMNAS,
+        num_robots=config.N_ROBOTS,
+        posicion_inicial=config.POSICION_INICIAL,
+        posicion_carga=config.POSICION_CARGA,      # <<< NUEVO
+        bateria_maxima=config.BATERIA_MAXIMA,      # <<< NUEVO
+        bateria_inicial=config.BATERIA_INICIAL       # <<< NUEVO
+    )
 
     # Variables de simulación
     estado = env.reset()

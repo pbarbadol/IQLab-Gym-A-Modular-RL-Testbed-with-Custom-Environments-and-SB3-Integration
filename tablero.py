@@ -17,7 +17,8 @@ NUM_ACTIONS = len(ACTION_MAP)
 
 # Definimos el estado. Este será una tupla que contiene Tuple[int, int] (posición del robot) y un conjunto de celdas visitadas (FrozenSet[Tuple[int, int]]).
 # Ponemos el tipo FrozenSet para que no se pueda modificar el conjunto de celdas visitadas una vez devuelto el estado.
-StateType = Tuple[Tuple[Tuple[int, int], ...], FrozenSet[Tuple[int, int]], Tuple[bool, ...]]
+# Hemos añadido el ultimo Tuple que indica el nivel de batería
+StateType = Tuple[Tuple[Tuple[int, int], ...], FrozenSet[Tuple[int, int]], Tuple[bool, ...], Tuple[int, ...]]
 
 """
 La lógica del entorno (Tablero) debe centrarse en describir cómo funciona el mundo: 
@@ -25,19 +26,26 @@ cómo cambian las posiciones, qué celdas se visitan, cuándo termina un episodi
 La recompensa, en cambio, define el objetivo del agente: qué comportamiento queremos que aprenda.
 """
 class Tablero:
-    def __init__(self, filas, columnas, num_robots, posicion_inicial=None):
+    def __init__(self, filas, columnas, num_robots, posicion_inicial=None, posicion_carga: Tuple[int,int] = (0,0), bateria_maxima: int = 10, bateria_inicial: int = 10):
 
         # Control de errores de inicialización:
-        if not (filas > 0 and columnas > 0):
-            raise ValueError("El número de filas y columnas debe ser mayor que 0.")
-        if not (num_robots > 0 and num_robots <= filas * columnas):
-            raise ValueError("El número de robots debe ser mayor que 0 y menor o igual al número de celdas del tablero.")
+        if not (filas > 0 and columnas > 0): raise ValueError("Filas/Columnas deben ser > 0.")
+        if not num_robots > 0: raise ValueError("Num_robots debe ser > 0.")
+        if not self._es_posicion_valida_static(posicion_carga[0], posicion_carga[1], filas, columnas):
+            raise ValueError(f"Posición de carga {posicion_carga} fuera del tablero {filas}x{columnas}.")
+        if not (0 < bateria_inicial <= bateria_maxima):
+            raise ValueError("Batería inicial debe estar entre 1 y bateria_maxima.")
+        
         
         # Asignación de atributos:
         self.filas = filas
         self.columnas = columnas
         self.num_robots = num_robots
         self.total_celdas = filas * columnas
+        self.posicion_carga = posicion_carga
+        self.bateria_maxima = bateria_maxima
+        self.bateria_inicial = bateria_inicial
+
 
         # Definir posiciones iniciales
         if posicion_inicial:
@@ -58,6 +66,7 @@ class Tablero:
         self._posicion_robots: List[Tuple[int, int]] = [] # Inicializamos la posición de los robots en una lista vacía
         self._celdas_visitadas: Set[Tuple[int, int]] = set() # Inicializamos las celdas visitadas en un conjunto vacío
         self._robots_activos: List[bool] = [] # Inicializamos los robots activos en una lista vacía
+        self._bateria_robots: List[int] = [] # NUEVO
 
         # Inicializamos el tablero:
         self.reset()
@@ -72,7 +81,7 @@ class Tablero:
         return 0 <= fila < self.filas and 0 <= columna < self.columnas
     
     def get_estado(self)  -> StateType:
-        return (tuple(self._posicion_robots), frozenset(self._celdas_visitadas), tuple(self._robots_activos))
+        return (tuple(self._posicion_robots), frozenset(self._celdas_visitadas), tuple(self._robots_activos), tuple(self._bateria_robots))
     
     def get_valid_actions(self, robot_id: int) -> List[int]:
 
@@ -100,6 +109,7 @@ class Tablero:
         self._posicion_robots = list(self._posicion_inicial_robots) # Reiniciamos la posición de los robots a la inicial
         self._celdas_visitadas = set(self._posicion_robots)
         self._robots_activos = [True] * self.num_robots
+        self._bateria_robots = [self.bateria_inicial] * self.num_robots
         return self.get_estado() # Devolvemos el estado inicial del tablero
 
 
@@ -111,6 +121,8 @@ class Tablero:
 
         # Copia para no modificar directamente mientras se itera
         posicion_siguiente = list(self._posicion_robots)
+        bateria_siguiente = list(self._bateria_robots) # NUEVO
+        fallo_por_bateria = False # NUEVO
 
         # Iteramos sobre cada robot y su acción correspondiente:
         for i in range(self.num_robots):
@@ -121,6 +133,23 @@ class Tablero:
             if action_index not in ACTION_MAP:
                 raise ValueError(f"Acción inválida: {action_index}. Debe ser un número entre 0 y {NUM_ACTIONS - 1}.")
             
+            # --- Consumo de batería por acción ---
+            consumo = 0
+            if action_index != ACTION_TERMINATE_INDEX:
+                # Si no es la acción de terminar, consumimos batería
+                consumo = 1
+
+                        # Comprobar si hay suficiente batería ANTES de intentar moverse
+            if bateria_siguiente[i] - consumo <= 0:
+                 # ¡Batería agotada! El robot falla y se desactiva.
+                 self._robots_activos[i] = False
+                 bateria_siguiente[i] = 0 # Batería a 0
+                 fallo_por_bateria = True
+                 #print(f"¡FALLO! Robot {i} se quedó sin batería.")
+                 # No se mueve en este estado de fallo
+                 continue # Pasa al siguiente robot
+            
+            bateria_siguiente[i] -= consumo
             # --- Si la acción es Terminar ---
             if action_index == ACTION_TERMINATE_INDEX:
                 self._robots_activos[i] = False # Marca este robot como inactivo para futuros pasos
@@ -136,15 +165,19 @@ class Tablero:
                 posicion_siguiente[i] = (fila_nueva, columna_nueva) # Actualizamos la posición del robot
                 self._celdas_visitadas.add((fila_nueva, columna_nueva)) # Añadimos la celda visitada al conjunto de celdas visitadas
             
+                if (fila_nueva, columna_nueva) == self.posicion_carga:
+                    # Si el robot llega a la posición de carga, recarga la batería:
+                    bateria_siguiente[i] = self.bateria_maxima
 
         # Actualizamos la posición de los robots:
         self._posicion_robots = posicion_siguiente
+        self._bateria_robots = bateria_siguiente # NUEVO
 
         completado = len(self._celdas_visitadas) == self.total_celdas
         # Comprobamos si todos los robots han terminado:
         todos_terminados = not any(self._robots_activos)
 
-        finalizar = todos_terminados or completado
+        finalizar = todos_terminados or completado or fallo_por_bateria # Si todos han terminado o si se ha completado el tablero o si algún robot ha fallado por batería
 
         return self.get_estado(), finalizar # Devolvemos el estado y si se ha completado el tablero o no
     
@@ -162,29 +195,36 @@ class Tablero:
                 if self.es_posicion_valida(r, c):
                     grid_repr[r][c] = '.' # Punto para visitada
 
-            # Marcar posiciones de los robots (con manejo básico de superposición)
+            # Marcar estación de carga
+            cr, cc = self.posicion_carga
+            if self.es_posicion_valida(cr, cc):
+                grid_repr[cr][cc] = 'C' # 'C' para Charging station
+
             robot_markers_en_celda = {}
             for i, (r, c) in enumerate(self._posicion_robots):
-                if self.es_posicion_valida(r, c):
-                    marker = str(i) if self._robots_activos[i] else 'x' # ID si activo, 'x' si inactivo
-                    if (r, c) not in robot_markers_en_celda:
-                        robot_markers_en_celda[(r, c)] = []
-                    robot_markers_en_celda[(r, c)].append(marker)
+                 if self.es_posicion_valida(r,c):
+                     marker = str(i) if self._robots_activos[i] else 'x'
+                     # Sobrescribir 'C' si robot está encima y visitada es '.'
+                     if grid_repr[r][c] == 'C' or grid_repr[r][c] == '.':
+                         grid_repr[r][c] = marker # El robot tiene prioridad visual
+                     elif grid_repr[r][c] == ' ': # Celda vacía no visitada
+                         grid_repr[r][c] = marker
+                     elif grid_repr[r][c].isdigit() or grid_repr[r][c] == '+': # Ya hay otro robot
+                         grid_repr[r][c] = '+'
+                     elif grid_repr[r][c] == 'x': # Ya hay un robot inactivo
+                          grid_repr[r][c] = '+' # O mantener 'x'? '+' indica colisión/compartido
 
-            # Añadir marcadores de robots al grid
-            for (r, c), markers in robot_markers_en_celda.items():
-                if len(markers) == 1:
-                    grid_repr[r][c] = markers[0]
-                else:
-                    grid_repr[r][c] = '+' # Símbolo para múltiples robots
+            # Imprimir tablero (igual que antes)
+            print("-" * (self.columnas * 2 + 1))
+            for r in range(self.filas): print("|" + "|".join(grid_repr[r]) + "|")
+            print("-" * (self.columnas * 2 + 1))
 
-            # Imprimir el tablero
-            print("-" * (self.columnas * 2 + 1))
-            for r in range(self.filas):
-                print("|" + "|".join(grid_repr[r]) + "|")
-            print("-" * (self.columnas * 2 + 1))
-            print(f"Visitadas: {len(self._celdas_visitadas)}/{self.total_celdas} | "
-                    f"Activos: {self._robots_activos}")
+            # Imprimir Info Adicional (Batería)
+            bateria_str = ', '.join([f"R{i}({'A' if self._robots_activos[i] else 'I'}):{self._bateria_robots[i]}"
+                                    for i in range(self.num_robots)])
+            print(f"Visitadas: {len(self._celdas_visitadas)}/{self.total_celdas} | Bat: [{bateria_str}]")
+        else:
+            pass # Otros modos de render
             
 
 if __name__ == "__main__":

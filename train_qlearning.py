@@ -240,8 +240,16 @@ def plot_and_save_metric(episodes, data, title, ylabel, filename, window=100, sh
 # --- Bloque Principal ---
 if __name__ == "__main__":
     # Crear entorno desde config
-    entorno = Tablero(filas=config.FILAS, columnas=config.COLUMNAS,
-                      num_robots=config.N_ROBOTS, posicion_inicial=config.POSICION_INICIAL)
+    # En train.py y visualize_sim.py
+    entorno = Tablero(
+        filas=config.FILAS,
+        columnas=config.COLUMNAS,
+        num_robots=config.N_ROBOTS,
+        posicion_inicial=config.POSICION_INICIAL,
+        posicion_carga=config.POSICION_CARGA,      # <<< NUEVO
+        bateria_maxima=config.BATERIA_MAXIMA,      # <<< NUEVO
+        bateria_inicial=config.BATERIA_INICIAL       # <<< NUEVO
+    )
 
     # Entrenar y obtener resultados y ruta
     q_tables_finales, metrics_data, results_dir = entrenar(
