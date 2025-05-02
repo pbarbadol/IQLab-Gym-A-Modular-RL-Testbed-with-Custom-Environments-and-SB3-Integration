@@ -41,3 +41,4 @@ pytest_cache/
 
 # Archivos de documentación
 results*/
+dqn_tablero_tensorboard/

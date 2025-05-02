@@ -22,7 +22,7 @@ MAX_STEPS_PER_EPISODE = 64   # Límite de pasos por episodio (evita bucles infin
 # --- Configuración Adicional ---
 EPISODIOS_PARA_LOG = 100      # Cada cuántos episodios imprimir progreso
 GUARDAR_QTABLES_FILENAME = "q_tables_final.pkl" # Nombre archivo para guardar Q-Tables
-CARGAR_QTABLES_FILENAME = "q_tables_final.pkl"  # Nombre archivo para cargar Q-Tables (puede ser el mismo)
+CARGAR_QTABLES_FILENAME = "results\R3_M8x8_E50000_20250425-144726\q_tables_final.pkl"  # Nombre archivo para cargar Q-Tables (puede ser el mismo)
 GENERAR_GRAFICO = True        # Si se genera el gráfico de recompensas al final
 VENTANA_PROMEDIO_MOVIL = 100  # Ventana para suavizar el gráfico de recompensas
 

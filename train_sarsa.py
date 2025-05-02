@@ -1,4 +1,4 @@
-# train_sarsa.py (o añadir a train.py)
+# train_sarsa.py
 
 import time
 import numpy as np
@@ -262,7 +262,5 @@ if __name__ == "__main__":
 
     # --- Evaluación SARSA (igual que Q-Learning, pero usando q_tables_sarsa) ---
     if config.EVALUAR_AL_FINAL and q_tables_sarsa:
-         # ... (código para definir/importar y llamar a evaluar_politica usando q_tables_sarsa) ...
-         # Asegúrate de que la función evaluar_politica use epsilon=0
-         # y cargue/use las q_tables_sarsa
-         print("\n--- Evaluación SARSA (No implementada aquí, requiere `evaluar_politica`) ---")
+        print("\n--- Evaluación SARSA (No implementada aquí, requiere `evaluar_politica`) ---")
+         
