@@ -41,3 +41,5 @@ pytest_cache/
 
 # Archivos de documentación
 results*/
+
+TFM.code-workspace
