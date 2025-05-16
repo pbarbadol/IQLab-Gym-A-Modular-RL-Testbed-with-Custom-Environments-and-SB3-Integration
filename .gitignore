@@ -43,3 +43,8 @@ pytest_cache/
 results*/
 
 TFM.code-workspace
+
+ppo_multirobot_dict_tensorboard
+ppo_multirobot_simplified_tensorboard
+ppo_multirobot_simplified_model.zip
+ppo_multirobot_simplified_model2.zip
