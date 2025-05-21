@@ -115,12 +115,17 @@ class MultiRobotGridEnv(gym.Env):
             self.OBS_VECTOR_FEATURES: vector_features_obs
         }
 
+    # Dentro de tu clase MultiRobotGridEnv:
+
     def _get_info(self):
+        total_cells = self.grid_size * self.grid_size
+        explored_cells = int(np.sum(self._grid))
         return {
-            "explored_cells": int(np.sum(self._grid)),
+            "explored_cells": explored_cells,
             "active_robots": int(np.sum(self._robot_active)),
             "robot_positions": [list(pos) for pos in self._robot_positions],
             "current_step": self.current_step,
+            "is_success": explored_cells == total_cells # IMPORTANTE para Monitor
         }
 
     def reset(self, seed=None, options=None):
@@ -320,127 +325,201 @@ class CustomCNN(BaseFeaturesExtractor):
         return self.linear(self.cnn(grid_map_tensor))
     
 
-# --- Main para probar (sin cambios significativos, debería seguir funcionando) ---
+# --- Main para probar (CON MODIFICACIONES PARA LOGGING Y PPO) ---
 if __name__ == '__main__':
-    print("--- Iniciando prueba con agente aleatorio (versión simplificada) ---")
-    GRID_SIZE_TEST = 10
-    NUM_ROBOTS_TEST = 2
-    MAX_STEPS_TEST = 100
-    DENSE_REWARD_TEST = True
+    # --- La prueba con agente aleatorio se puede mantener o comentar ---
+    # print("--- Iniciando prueba con agente aleatorio (versión simplificada) ---")
+    # ... (tu código de prueba aleatoria) ...
+    # print("Prueba aleatoria finalizada.")
 
+    import os # Necesario para crear directorios
+    from stable_baselines3.common.monitor import Monitor # IMPORTANTE
 
-    # Definir policy_kwargs para usar el extractor personalizado
-    policy_kwargs = dict(
-        features_extractor_class=CustomCNN,
-        features_extractor_kwargs=dict(features_dim=64) # Puedes ajustar este 64 a 32, 128, etc.
-                                                        # Es la dimensionalidad de las características extraídas del grid_map
-    )
-
-    env_test = MultiRobotGridEnv(
-        grid_size=GRID_SIZE_TEST,
-        num_robots=NUM_ROBOTS_TEST,
-        render_mode='human',
-        max_steps=MAX_STEPS_TEST,
-        dense_reward=DENSE_REWARD_TEST
-    )
-    print("Espacio de Acción:", env_test.action_space)
-    print("Espacio de Observación:", env_test.observation_space)
-
-    for episode in range(1): # Un episodio para prueba rápida
-        obs, info = env_test.reset()
-        terminated = False
-        truncated = False
-        total_reward = 0
-        steps = 0
-        print(f"\n--- Episodio Aleatorio {episode+1} ---")
-        while not terminated and not truncated:
-            action = env_test.action_space.sample()
-            obs, reward, terminated, truncated, info = env_test.step(action)
-            total_reward += reward
-            steps += 1
-            if steps % 20 == 0 or terminated or truncated:
-                print(f"  Paso {steps}: Recompensa: {reward:.2f}, Celdas Expl: {info['explored_cells']}, Robots Act: {info['active_robots']}")
-
-            if terminated or truncated:
-                print(f"Episodio {episode+1} {'terminado' if terminated else 'truncado'} después de {steps} pasos.")
-                print(f"  Recompensa total: {total_reward:.2f}")
-                print(f"  Celdas exploradas: {info['explored_cells']} / {env_test.grid_size**2}")
-                break
-    env_test.close()
-    print("Prueba aleatoria finalizada.")
-
-    print("\n--- Iniciando prueba con Stable Baselines3 PPO (versión simplificada) ---")
+    print("\n--- Iniciando Entrenamiento PPO con Logging Mejorado ---")
+    
+    # --- Parámetros de Entrenamiento ---
     GRID_SIZE_TRAIN = 8
     NUM_ROBOTS_TRAIN = 3
-    MAX_STEPS_TRAIN = 80
+    # MAX_STEPS_TRAIN = GRID_SIZE_TRAIN * GRID_SIZE_TRAIN # Permitir suficientes pasos para explorar teóricamente
+    MAX_STEPS_TRAIN = int(GRID_SIZE_TRAIN * GRID_SIZE_TRAIN * 1.25) # Un poco más de margen
     DENSE_REWARD_TRAIN = True
-    TOTAL_TIMESTEPS_TRAIN = 2_000_000 
+    # Vamos a poner un valor para una ejecución de prueba más corta, o mantén los 5M si tienes tiempo.
+    TOTAL_TIMESTEPS_TRAIN = 5_000_000 # Prueba más corta para verificar logging
+    # TOTAL_TIMESTEPS_TRAIN = 5_000_000 # Si quieres intentar un entrenamiento más largo
 
-    def make_env(grid_size, num_robots, max_steps, dense_reward, render_mode=None):
+    # --- Directorios para Logs y Modelo ---
+    EXPERIMENT_NAME = f"PPO_MR_{NUM_ROBOTS_TRAIN}R_{GRID_SIZE_TRAIN}x{GRID_SIZE_TRAIN}"
+    LOG_DIR_BASE = "./ppo_training_logs/"
+    MODEL_DIR_BASE = "./ppo_trained_models/"
+    
+    TENSORBOARD_LOG_PATH = os.path.join(LOG_DIR_BASE, EXPERIMENT_NAME)
+    MODEL_SAVE_PATH = os.path.join(MODEL_DIR_BASE, EXPERIMENT_NAME, "model") # SB3 añade .zip
+
+    os.makedirs(TENSORBOARD_LOG_PATH, exist_ok=True)
+    os.makedirs(os.path.join(MODEL_DIR_BASE, EXPERIMENT_NAME), exist_ok=True)
+
+    # --- Factory para el Entorno con Monitor ---
+    def make_env_monitored(grid_size, num_robots, max_steps, dense_reward, 
+                           render_mode=None, rank=0, seed=0, log_dir=None, 
+                           include_terminate=True): # Añadido include_terminate
         def _init():
             env = MultiRobotGridEnv(
-                grid_size=grid_size, num_robots=num_robots, max_steps=max_steps,
-                dense_reward=dense_reward, render_mode=render_mode
+                grid_size=grid_size,
+                num_robots=num_robots,
+                max_steps=max_steps,
+                dense_reward=dense_reward,
+                render_mode=render_mode,
+                # include_terminate_action=include_terminate # Asegúrate que tu env lo acepte
             )
+            
+            monitor_path_for_trial = None
+            if log_dir: # Solo crear path si log_dir se proporciona
+                monitor_path_for_trial = os.path.join(log_dir, f"monitor_{rank}")
+                # No necesitas crear el directorio aquí, Monitor lo hace si filename se da.
+            
+            # Envolver con Monitor. Pasar info_keywords para que se logueen.
+            env = Monitor(env, filename=monitor_path_for_trial, 
+                          info_keywords=("explored_cells", "active_robots", "is_success"))
+            
+            env.reset(seed=seed + rank) # Resetear después de wrappers es una buena práctica
             return env
         return _init
 
-    print("Verificando el entorno individual...")
-    env_single_check = make_env(GRID_SIZE_TRAIN, NUM_ROBOTS_TRAIN, MAX_STEPS_TRAIN, DENSE_REWARD_TRAIN)()
+    # --- Verificación del Entorno (opcional pero recomendado) ---
+    print("Verificando el entorno individual con Monitor...")
+    # Para check_env, no necesitamos log_dir, rank, o seed necesariamente si es solo para verificar la API.
+    # Pero la factory los espera, así que los pasamos.
+    env_check_instance = make_env_monitored(GRID_SIZE_TRAIN, NUM_ROBOTS_TRAIN, MAX_STEPS_TRAIN, 
+                                            DENSE_REWARD_TRAIN, rank=0, seed=42, log_dir=None,
+                                            include_terminate=True)() # Llamar para obtener la instancia
     try:
-        check_env(env_single_check, warn=True, skip_render_check=True)
-        print("Verificación del entorno individual completada.")
+        check_env(env_check_instance, warn=True, skip_render_check=True)
+        print("Verificación del entorno con Monitor completada.")
     except Exception as e:
         print(f"Error durante check_env: {e}")
-        env_single_check.close()
+        env_check_instance.close() # Asegúrate de cerrar si la verificación falla y sales
         exit()
     finally:
-        env_single_check.close()
+        env_check_instance.close() # Siempre cierra el entorno de verificación
 
-    env_train_sb3 = DummyVecEnv([make_env(GRID_SIZE_TRAIN, NUM_ROBOTS_TRAIN, MAX_STEPS_TRAIN, DENSE_REWARD_TRAIN)])
+    # --- Crear Entorno Vectorizado para Entrenamiento ---
+    # Para este ejemplo, usaremos un solo entorno (num_cpu = 1)
+    # Si tuvieras más CPUs, podrías aumentar esto y usar SubprocVecEnv
+    num_cpu_train = 1
+    env_train_sb3 = DummyVecEnv([
+        make_env_monitored(
+            GRID_SIZE_TRAIN, NUM_ROBOTS_TRAIN, MAX_STEPS_TRAIN, DENSE_REWARD_TRAIN,
+            rank=i, seed=42, log_dir=TENSORBOARD_LOG_PATH, # Usar el mismo dir para logs de Monitor
+            include_terminate=True
+        ) for i in range(num_cpu_train)
+    ])
+
+    # --- Configuración de la Política y el Extractor ---
+    # La dimensionalidad de salida de tu CustomCNN
+    # Si tu CNN tiene Flatten() -> Linear(n_flatten, features_dim)
+    # features_dim es cnn_output_features_dim.
+    cnn_output_features_dim = 128  # Ajusta esto según la salida de tu self.linear en CustomCNN
+
+    policy_kwargs_ppo = dict(
+        features_extractor_class=CustomCNN,
+        features_extractor_kwargs=dict(features_dim=cnn_output_features_dim),
+        # Es MUY recomendable definir net_arch para controlar las capas después de la concatenación
+        # de la salida de la CNN y la MLP de las características vectoriales.
+        # El tamaño de entrada a estas capas es cnn_output_features_dim + (salida de MLP para vector_features)
+        # SB3 usa por defecto una MLP [256] para los vector_features si no hay un extractor específico para ellos.
+        # Así que la entrada a net_arch sería cnn_output_features_dim + 256 (aproximadamente)
+        # O si la MLP de vector_features es más simple, podría ser cnn_output_features_dim + len(vector_features)
+        # Prueba con capas de tamaño intermedio o grande:
+        net_arch=dict(pi=[256, 128], vf=[256, 128]) # Ejemplo de arquitectura para política y valor
+    )
     
+    # --- Hiperparámetros PPO Ajustados ---
+    # n_steps: Número de pasos a recolectar por entorno antes de actualizar.
+    # Total de datos para una actualización = n_steps * num_cpu_train
+    # Un buen valor total suele ser 1024, 2048, o 4096.
+    # Si MAX_STEPS_TRAIN es ~80, y queremos ver varios episodios:
+    n_steps_ppo = 1024 // num_cpu_train if num_cpu_train > 0 else 1024 
+    if n_steps_ppo < MAX_STEPS_TRAIN : # Asegurar al menos un episodio completo si es posible
+        n_steps_ppo = MAX_STEPS_TRAIN * 2 # Ej: recolectar datos de 2 episodios completos
+
     model = PPO(
         "MultiInputPolicy",
         env_train_sb3,
-        verbose=0,
-        tensorboard_log="./ppo_multirobot_simplified_tensorboard/",
-        ent_coef=0.01,
-        learning_rate=3e-4,
-        n_steps=128,
-        batch_size=32,
-        policy_kwargs=policy_kwargs  # <--- Propia red convolucional
+        verbose=1, # Para ver logs de SB3 durante el entrenamiento
+        tensorboard_log=TENSORBOARD_LOG_PATH, # Directorio para los logs de TensorBoard
+        learning_rate=3e-4,     # Puede necesitar ajuste (e.g., 1e-4)
+        n_steps=n_steps_ppo,
+        batch_size=64,          # Minibatch size
+        n_epochs=10,            # Épocas de optimización por recolección
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.01,         # Coeficiente de entropía (0.01 puede ser un buen inicio)
+        vf_coef=0.5,            # Coeficiente de la función de valor
+        max_grad_norm=0.5,      # Recorte de gradiente
+        policy_kwargs=policy_kwargs_ppo
     )
 
     print(f"Empezando entrenamiento PPO por {TOTAL_TIMESTEPS_TRAIN} timesteps...")
-    #model.learn(total_timesteps=TOTAL_TIMESTEPS_TRAIN, progress_bar=True)
-    print("Entrenamiento completado.")
-
-    model_path = "./ppo_multirobot_simplified_model2"
-    #model.save(model_path)
-    print(f"Modelo guardado en {model_path}.zip")
-    print("Cargando modelo guardado...")
-    model = PPO.load(model_path, env=env_train_sb3)
-    print("\n--- Probando el agente entrenado (versión simplificada) ---")
-    env_eval = MultiRobotGridEnv(
-        grid_size=GRID_SIZE_TRAIN, num_robots=NUM_ROBOTS_TRAIN,
-        max_steps=MAX_STEPS_TRAIN + 20, render_mode='human', dense_reward=DENSE_REWARD_TRAIN
-    )
-
-    for episode in range(2): # Dos episodios de evaluación
-        obs, info = env_eval.reset()
-        terminated, truncated = False, False
-        episode_reward, episode_steps = 0, 0
-        print(f"\n--- Evaluación Episodio {episode + 1} ---")
-        while not terminated and not truncated:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env_eval.step(action)
-            episode_reward += reward
-            episode_steps += 1
-            if terminated or truncated:
-                print(f"Evaluación Episodio {episode + 1} finalizado en {episode_steps} pasos. Recompensa: {episode_reward:.2f}")
-                print(f"  Info final: Celdas Expl: {info['explored_cells']}, Robots Act: {info['active_robots']}")
-                break
+    print(f"Logs de TensorBoard se guardarán en: {TENSORBOARD_LOG_PATH}")
+    print(f"Modelo se guardará en: {MODEL_SAVE_PATH}.zip")
     
-    env_train_sb3.close()
-    env_eval.close()
+    try:
+        #model.learn(total_timesteps=TOTAL_TIMESTEPS_TRAIN, progress_bar=True)
+        print("Entrenamiento completado.")
+        #model.save(MODEL_SAVE_PATH)
+        print(f"Modelo guardado en {MODEL_SAVE_PATH}.zip")
+    except Exception as e_learn:
+        print(f"ERROR durante el entrenamiento: {e_learn}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        env_train_sb3.close() # Siempre cierra el entorno de entrenamiento
+
+    # --- Cargar y Probar el Agente Entrenado ---
+    print(f"\nCargando modelo desde {MODEL_SAVE_PATH}.zip (si el entrenamiento fue exitoso)...")
+    try:
+        # No es necesario pasar 'env' a PPO.load si los espacios de obs/acción no cambian
+        # y si estás usando el mismo tipo de política.
+        loaded_model = PPO.load(MODEL_SAVE_PATH) 
+        print("Modelo cargado exitosamente.")
+
+        print("\n--- Probando el agente entrenado ---")
+        env_eval = MultiRobotGridEnv(
+            grid_size=GRID_SIZE_TRAIN, # Usar mismos params que entrenamiento para evaluación justa
+            num_robots=NUM_ROBOTS_TRAIN,
+            max_steps=MAX_STEPS_TRAIN + int(MAX_STEPS_TRAIN * 0.5), # Un poco más de margen
+            render_mode='human', 
+            dense_reward=DENSE_REWARD_TRAIN,
+            # include_terminate_action=True # Asegúrate que esto coincida con el entrenamiento
+        )
+
+        for episode in range(3): # Evaluar por 3 episodios
+            obs, info = env_eval.reset()
+            terminated, truncated = False, False
+            episode_reward, episode_steps = 0, 0
+            print(f"\n--- Evaluación Episodio {episode + 1} ---")
+            for eval_step_count in range(MAX_STEPS_TRAIN * 2): # Límite de pasos para la evaluación
+                action, _ = loaded_model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = env_eval.step(action)
+                episode_reward += reward
+                episode_steps += 1
+                if terminated or truncated:
+                    print(f"Evaluación Episodio {episode + 1} finalizado en {episode_steps} pasos. Recompensa: {episode_reward:.2f}")
+                    print(f"  Info final: Celdas Expl: {info['explored_cells']}, Activos: {info['active_robots']}, Éxito: {info.get('is_success', False)}")
+                    break
+            if not (terminated or truncated): # Si salió por el límite de eval_step_count
+                 print(f"Evaluación Episodio {episode + 1} alcanzó el límite de pasos de evaluación ({eval_step_count+1}). Recompensa: {episode_reward:.2f}")
+                 print(f"  Info final: Celdas Expl: {info['explored_cells']}, Activos: {info['active_robots']}, Éxito: {info.get('is_success', False)}")
+        
+        env_eval.close()
+
+    except FileNotFoundError:
+        print(f"No se encontró el modelo guardado en '{MODEL_SAVE_PATH}.zip'. Saltando evaluación.")
+    except Exception as e_eval:
+        print(f"ERROR durante la carga o evaluación del modelo: {e_eval}")
+        import traceback
+        traceback.print_exc()
+        if 'env_eval' in locals() and env_eval: env_eval.close()
+        
     print("\nPrueba del agente entrenado finalizada.")

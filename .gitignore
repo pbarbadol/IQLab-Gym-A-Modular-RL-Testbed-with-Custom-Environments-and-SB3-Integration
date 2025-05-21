@@ -48,3 +48,7 @@ ppo_multirobot_dict_tensorboard
 ppo_multirobot_simplified_tensorboard
 ppo_multirobot_simplified_model.zip
 ppo_multirobot_simplified_model2.zip
+experiment_battery_main
+ppo_singlerobot_grid_tensorboard
+ppo_training_logs
+ppo_trained_models

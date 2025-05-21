@@ -1,20 +1,22 @@
-# train.py (refactorizado)
+# train.py (refactorizado para Opción 3)
 
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 import pickle
 from collections import deque
-import os # Necesario para crear carpetas
-import json # Otra opción para guardar config/métricas
+import os
+import json
+import random # Importante para fijar semillas
 
 # --- Importar desde nuestros módulos ---
 try:
-    from tablero import Tablero, StateType
+    from tablero import Tablero, StateType # Asumo que StateType está aquí o es un alias conocido
     from q_learning_agent import (
-        inicializar_q_tables, elegir_acciones, calcular_recompensas, QTableType
+        inicializar_q_tables, elegir_acciones, calcular_recompensas, QTableType,
+        evaluar_politica # Importar evaluar_politica directamente
     )
-    import config # Importar toda la configuración
+    import config # Para la ejecución directa
 except ImportError as e:
     print(f"Error importando módulos: {e}")
     print("Asegúrate de que 'tablero.py', 'q_learning_agent.py' y 'config.py' estén en el mismo directorio o accesibles.")
@@ -23,82 +25,92 @@ except ImportError as e:
 # --- Tipo para las métricas (sin cambios) ---
 MetricsDict = dict[str, list]
 
+# ---------------------------------------------------------------------------
+# LA FUNCIÓN entrenar() SE MANTIENE CASI IGUAL INTERNAMENTE
+# SOLO ASEGÚRATE DE QUE USE LOS PARÁMETROS PASADOS Y NO config.* DIRECTAMENTE
+# Y QUE EL GUARDADO DE RESULTADOS RESPETE results_foldername y experiment_name
+# ---------------------------------------------------------------------------
 def entrenar(env: Tablero,
-             # --- Parámetros pasados explícitamente ---
              num_episodios: int, max_steps: int, alpha: float, gamma: float,
              epsilon_start: float, epsilon_end: float, epsilon_decay: float,
-             # --- Parámetros de control y guardado ---
              log_interval: int = 100,
-             results_foldername: str = "results", # Carpeta base para resultados
-             experiment_name: str | None = None, # Nombre específico para la subcarpeta
+             results_foldername: str = "results", # Carpeta base para este grupo/tipo de experimento
+             experiment_name: str | None = None, # Nombre específico para la subcarpeta de ESTE trial
              cargar_desde: str | None = None,
-             guardar_q_tables_file: str | None = "q_tables.pkl" # Nombre archivo dentro de la carpeta
-             ) -> tuple[QTableType | None, MetricsDict, str]: # Devuelve Q-tables, métricas y ruta de resultados
+             guardar_q_tables_file: str | None = "q_tables_final.pkl"
+             ) -> tuple[QTableType | None, MetricsDict, str]:
     """
     Entrena agentes IQL, recopila métricas y guarda resultados en una carpeta específica.
+    MODIFICADO: Toma results_foldername y experiment_name para un control más fino del guardado.
     """
-    # --- Crear Carpeta de Resultados ---
+    # --- Crear Carpeta de Resultados para ESTE TRIAL ---
     if experiment_name is None:
-        # Generar nombre automático si no se proporciona
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         experiment_name = f"R{env.num_robots}_M{env.filas}x{env.columnas}_E{num_episodios}_{timestamp}"
 
-    output_dir = os.path.join(results_foldername, experiment_name)
+    # El output_dir ahora es la carpeta específica del trial DENTRO de results_foldername
+    output_dir_trial = os.path.join(results_foldername, experiment_name)
     try:
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"Guardando resultados en: {output_dir}")
+        os.makedirs(output_dir_trial, exist_ok=True)
+        # No imprimir "Guardando resultados en:" aquí, se hará en run_training_session
     except OSError as e:
-        print(f"Error al crear directorio de resultados '{output_dir}': {e}")
-        # Podríamos decidir continuar sin guardar o salir
-        return None, {}, "" # Indicar fallo
+        print(f"Error al crear directorio de resultados del trial '{output_dir_trial}': {e}")
+        return None, {}, ""
 
-    # --- Guardar Configuración Inicial ---
-    config_summary = {
+    # --- Guardar Configuración de ESTE TRIAL ---
+    config_summary_trial = {
         "entorno": {
             "filas": env.filas, "columnas": env.columnas, "num_robots": env.num_robots,
-            "total_celdas": env.total_celdas, "posicion_inicial": env._posicion_inicial_robots
+            "total_celdas": env.total_celdas,
+            # Convertir tupla a lista para serialización JSON si es necesario para _posicion_inicial_robots
+            "posicion_inicial": list(env._posicion_inicial_robots) if env._posicion_inicial_robots else None
         },
         "hiperparametros": {
             "alpha": alpha, "gamma": gamma, "epsilon_start": epsilon_start,
             "epsilon_end": epsilon_end, "epsilon_decay": epsilon_decay
         },
-        "entrenamiento": {
+        "entrenamiento_trial": { # Diferenciar de la config general del grupo
             "num_episodios": num_episodios, "max_steps_per_episode": max_steps,
             "log_interval": log_interval
         },
-        "archivos": {
+        "archivos_trial": {
              "cargar_q_tables_desde": cargar_desde,
-             "guardar_q_tables_en": os.path.join(output_dir, guardar_q_tables_file) if guardar_q_tables_file else None
+             "guardar_q_tables_en": os.path.join(output_dir_trial, guardar_q_tables_file) if guardar_q_tables_file else None
         }
     }
-    summary_filepath = os.path.join(output_dir, "summary.txt")
+    summary_filepath_trial = os.path.join(output_dir_trial, "summary_trial.txt") # Renombrado
     try:
-        with open(summary_filepath, 'w') as f:
-            # Usar json.dump para un formato legible y fácil de parsear
-            json.dump(config_summary, f, indent=4)
-            # Alternativa simple con print:
-            # f.write("--- Configuración del Experimento ---\n")
-            # f.write(f"Nombre: {experiment_name}\n")
-            # ... escribir más detalles ...
-        print(f"Resumen de configuración guardado en '{summary_filepath}'")
+        with open(summary_filepath_trial, 'w') as f:
+            json.dump(config_summary_trial, f, indent=4)
     except IOError as e:
-        print(f"Error al guardar resumen de configuración: {e}")
-
+        print(f"Error al guardar resumen de config del trial: {e}")
 
     # --- Inicialización (Q-Tables, Epsilon, Métricas) ---
-    q_tables = inicializar_q_tables(env.num_robots) # Ignoramos cargar por simplicidad aquí, añadir si es necesario
+    # Modificación para manejar la carga de Q-tables
+    if cargar_desde and os.path.exists(cargar_desde):
+        print(f"Cargando Q-Tables desde: {cargar_desde}")
+        # Necesitas una función para cargar q_tables que sea compatible con el formato guardado
+        # Asumiré que tienes q_learning_agent.cargar_q_tables(num_robots, filename)
+        from q_learning_agent import cargar_q_tables # Asegúrate que esta función exista y funcione
+        q_tables = cargar_q_tables(env.num_robots, cargar_desde)
+    else:
+        if cargar_desde: # Si se especificó pero no existe
+            print(f"Advertencia: Archivo {cargar_desde} para Q-Tables no encontrado. Inicializando Q-tables vacías.")
+        q_tables = inicializar_q_tables(env.num_robots)
+
     epsilon = epsilon_start
     metrics: MetricsDict = {
         "episodio": [], "recompensa_promedio": [], "pasos_por_episodio": [],
         "epsilon": [], "porcentaje_visitadas": [], "tasa_exito_100ep": [],
         "td_error_promedio": []
     }
-    ultimos_100_completados = deque(maxlen=log_interval) # Usar log_interval como ventana
+    # Usar log_interval como ventana, o un valor fijo si es más apropiado (e.g., 100)
+    ultimos_X_completados = deque(maxlen=log_interval if log_interval > 0 else 100)
 
-    print(f"--- Iniciando Entrenamiento ({num_episodios} episodios) ---")
-    start_time = time.time()
+    # print(f"--- Iniciando Entrenamiento para {experiment_name} ({num_episodios} episodios) ---") # Movido a run_training_session
+    start_time_trial = time.time()
 
-    # --- Bucle Principal de Entrenamiento (igual que antes) ---
+    # --- Bucle Principal de Entrenamiento (sin cambios en la lógica interna) ---
     for episodio in range(num_episodios):
         estado = env.reset()
         recompensa_acumulada_episodio = np.zeros(env.num_robots)
@@ -116,17 +128,19 @@ def entrenar(env: Tablero,
             recompensas = calcular_recompensas(estado_previo, estado_siguiente, acciones, done, env)
 
             for i in range(env.num_robots):
-                if estado_previo[2][i]:
+                if estado_previo[2][i]: # Si el robot estaba activo
                     accion_tomada = acciones[i]
                     recompensa_recibida = recompensas[i]
                     q_antiguo = q_tables[i][estado_previo].get(accion_tomada, 0.0)
                     mejor_q_siguiente = 0.0
-                    if not done and estado_siguiente[2][i]:
-                        acciones_validas_siguiente = env.get_valid_actions(i)
+                    if not done and estado_siguiente[2][i]: # Si el robot sigue activo en el siguiente estado
+                        acciones_validas_siguiente = env.get_valid_actions(i) # Pasar estado_siguiente explícitamente
                         if acciones_validas_siguiente:
                             q_valores_siguientes = q_tables[i][estado_siguiente]
+                            # Usar .get(a, 0.0) por si una acción válida aún no tiene entrada
                             q_validos = [q_valores_siguientes.get(a, 0.0) for a in acciones_validas_siguiente]
                             if q_validos: mejor_q_siguiente = max(q_validos)
+                    
                     delta = recompensa_recibida + gamma * mejor_q_siguiente - q_antiguo
                     td_error_sum += abs(delta)
                     update_count += 1
@@ -136,200 +150,228 @@ def entrenar(env: Tablero,
             estado = estado_siguiente
             if not episodio_completado and len(estado[1]) == env.total_celdas:
                 episodio_completado = True
-
+        
         # --- Fin del episodio - Recopilar Métricas ---
         metrics["episodio"].append(episodio + 1)
-        metrics["recompensa_promedio"].append(np.mean(recompensa_acumulada_episodio))
+        metrics["recompensa_promedio"].append(np.mean(recompensa_acumulada_episodio) if env.num_robots > 0 else 0.0)
         metrics["pasos_por_episodio"].append(paso)
         metrics["epsilon"].append(epsilon)
-        metrics["porcentaje_visitadas"].append(len(estado[1]) / env.total_celdas * 100)
-        ultimos_100_completados.append(episodio_completado)
-        tasa_exito_actual = sum(ultimos_100_completados) / len(ultimos_100_completados)
-        metrics["tasa_exito_100ep"].append(tasa_exito_actual)
+        metrics["porcentaje_visitadas"].append(len(estado[1]) / env.total_celdas * 100 if env.total_celdas > 0 else 0)
+        
+        ultimos_X_completados.append(episodio_completado)
+        if len(ultimos_X_completados) > 0:
+            tasa_exito_actual = sum(ultimos_X_completados) / len(ultimos_X_completados)
+        else:
+            tasa_exito_actual = 0.0
+        metrics["tasa_exito_100ep"].append(tasa_exito_actual) # El nombre de la métrica es histórico, podría ser "tasa_exito_ventana"
+        
         avg_td_error = (td_error_sum / update_count) if update_count > 0 else 0.0
         metrics["td_error_promedio"].append(avg_td_error)
 
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
 
-        # --- Log Periódico (sin cambios) ---
-        if (episodio + 1) % log_interval == 0:
-            tiempo_transcurrido = time.time() - start_time
-            print(f"Ep: {episodio+1}/{num_episodios} | "
-                  f"Exito: {tasa_exito_actual*100:.1f}% | "
-                  f"Visit: {np.mean(metrics['porcentaje_visitadas'][-log_interval:]):.1f}% | "
-                  f"Eps: {epsilon:.4f} | Rec: {np.mean(metrics['recompensa_promedio'][-log_interval:]):.3f} | "
-                  f"T: {tiempo_transcurrido:.1f}s")
+        if log_interval > 0 and (episodio + 1) % log_interval == 0:
+            tiempo_transcurrido_parcial = time.time() - start_time_trial
+            # Calcular promedios sobre la ventana de log_interval para el print
+            avg_rec_log_win = np.mean(metrics['recompensa_promedio'][-log_interval:])
+            avg_visit_log_win = np.mean(metrics['porcentaje_visitadas'][-log_interval:])
 
-    # --- Fin del Entrenamiento ---
-    tiempo_total = time.time() - start_time
-    print(f"--- Entrenamiento Finalizado en {tiempo_total:.2f} segundos ---")
+            print(f"  Trial: {experiment_name} - Ep: {episodio+1}/{num_episodios} | "
+                  f"Éxito (últ.{len(ultimos_X_completados)}ep): {tasa_exito_actual*100:.1f}% | "
+                  f"Visit (últ.{log_interval}ep): {avg_visit_log_win:.1f}% | "
+                  f"Eps: {epsilon:.4f} | Rec (últ.{log_interval}ep): {avg_rec_log_win:.3f} | "
+                  f"T: {tiempo_transcurrido_parcial:.1f}s")
+
+    tiempo_total_trial = time.time() - start_time_trial
+    # print(f"--- Entrenamiento del Trial '{experiment_name}' Finalizado en {tiempo_total_trial:.2f} segundos ---") # Movido
 
     # --- Guardar Métricas (como CSV o JSON) ---
-    metrics_filepath_csv = os.path.join(output_dir, "training_metrics.csv")
+    metrics_filepath_csv = os.path.join(output_dir_trial, "training_metrics.csv")
     try:
         import pandas as pd
         metrics_df = pd.DataFrame(metrics)
         metrics_df.to_csv(metrics_filepath_csv, index=False)
-        print(f"Datos de métricas guardados en '{metrics_filepath_csv}'")
     except ImportError:
-        print("Pandas no instalado. Guardando métricas como JSON.")
-        metrics_filepath_json = os.path.join(output_dir, "training_metrics.json")
+        metrics_filepath_json = os.path.join(output_dir_trial, "training_metrics.json")
         try:
-            with open(metrics_filepath_json, 'w') as f:
-                json.dump(metrics, f, indent=4)
-            print(f"Datos de métricas guardados en '{metrics_filepath_json}'")
-        except IOError as e:
-            print(f"Error al guardar métricas como JSON: {e}")
-    except Exception as e:
-        print(f"Error al guardar métricas como CSV: {e}")
-
+            with open(metrics_filepath_json, 'w') as f: json.dump(metrics, f)
+        except IOError as e: print(f"Error guardando métricas JSON: {e}")
+    except Exception as e: print(f"Error guardando métricas CSV: {e}")
 
     # --- Guardar Q-Tables ---
     if guardar_q_tables_file:
-        q_table_path = os.path.join(output_dir, guardar_q_tables_file)
+        q_table_path = os.path.join(output_dir_trial, guardar_q_tables_file)
         try:
+            # Tu método de serialización de Q-Table (el que tenías está bien)
+            q_tables_serializable = []
+            for q_t in q_tables:
+                # Convertir defaultdict interno a dict normal
+                q_t_dict = {k_state: dict(v_actions) for k_state, v_actions in q_t.items()}
+                q_tables_serializable.append(q_t_dict)
             with open(q_table_path, 'wb') as f:
-                 q_tables_serializable = [{k: dict(v) for k, v in q_t.items()} for q_t in q_tables]
                  pickle.dump(q_tables_serializable, f)
-            print(f"Q-Tables guardadas en '{q_table_path}'")
         except Exception as e:
-            print(f"Error al guardar Q-Tables: {e}")
+            print(f"Error al guardar Q-Tables en {q_table_path}: {e}")
 
-    # --- Guardar Resultados Finales en summary.txt ---
+    # --- Añadir Resultados Finales al summary_trial.txt ---
     try:
-        with open(summary_filepath, 'a') as f: # Abrir en modo 'append'
-            f.write("\n\n--- Resultados del Entrenamiento ---\n")
-            f.write(f"Tiempo total de entrenamiento: {tiempo_total:.2f} segundos\n")
-            # Añadir métricas finales clave
-            if metrics["recompensa_promedio"]:
-                 f.write(f"Recompensa promedio final ({log_interval} ep): {np.mean(metrics['recompensa_promedio'][-log_interval:]):.4f}\n")
-            if metrics["tasa_exito_100ep"]:
-                 f.write(f"Tasa de éxito final ({log_interval} ep): {metrics['tasa_exito_100ep'][-1]*100:.2f}%\n")
-            if metrics["porcentaje_visitadas"]:
-                 f.write(f"Porcentaje visitadas final ({log_interval} ep): {np.mean(metrics['porcentaje_visitadas'][-log_interval:]):.2f}%\n")
-
-        print(f"Resultados finales añadidos a '{summary_filepath}'")
+        with open(summary_filepath_trial, 'a') as f:
+            f.write("\n\n--- Resultados del Trial ---\n")
+            f.write(f"Tiempo total de entrenamiento del trial: {tiempo_total_trial:.2f} segundos\n")
+            window_size = log_interval if log_interval > 0 and len(metrics['recompensa_promedio']) >= log_interval else len(metrics['recompensa_promedio'])
+            if window_size > 0:
+                f.write(f"Recompensa promedio final ({window_size} ep): {np.mean(metrics['recompensa_promedio'][-window_size:]):.4f}\n")
+                f.write(f"Tasa de éxito final ({window_size} ep): {np.mean(metrics['tasa_exito_100ep'][-window_size:])*100:.2f}%\n") # Usa la métrica de tasa de éxito ya calculada
+                f.write(f"Porcentaje visitadas final ({window_size} ep): {np.mean(metrics['porcentaje_visitadas'][-window_size:]):.2f}%\n")
+            else:
+                f.write("No hay suficientes episodios para calcular métricas finales.\n")
     except IOError as e:
-        print(f"Error al añadir resultados al resumen: {e}")
+        print(f"Error al añadir resultados al resumen del trial: {e}")
+
+    return q_tables, metrics, output_dir_trial
 
 
-    return q_tables, metrics, output_dir # Devolver ruta para usarla después
-
+# ---------------------------------------------------------------------------
+# FUNCIÓN plot_and_save_metric SE MANTIENE IGUAL
+# ---------------------------------------------------------------------------
 def plot_and_save_metric(episodes, data, title, ylabel, filename, window=100, show_avg=True):
-    """Función auxiliar para crear y guardar un gráfico individual."""
     plt.figure(figsize=(10, 5))
     plt.plot(episodes, data, alpha=0.6, label=ylabel)
-    if show_avg:
-        if len(data) >= window:
-            promedio_movil = np.convolve(data, np.ones(window)/window, mode='valid')
-            plt.plot(episodes[window-1:], promedio_movil, color='red', linewidth=2, label=f'Prom. Móvil {window}ep')
+    if show_avg and len(data) >= window and window > 0: # Asegurar que window sea positivo
+        promedio_movil = np.convolve(data, np.ones(window)/window, mode='valid')
+        # Asegurar que episodes[window-1:] tenga la misma longitud que promedio_movil
+        start_index = window - 1
+        if start_index < len(episodes):
+             plt.plot(episodes[start_index:start_index+len(promedio_movil)], promedio_movil, color='red', linewidth=2, label=f'Prom. Móvil {window}ep')
     plt.title(title)
     plt.xlabel('Episodio')
     plt.ylabel(ylabel)
-    plt.legend()
+    if show_avg or ylabel: # Solo mostrar leyenda si hay algo que etiquetar
+        plt.legend()
     plt.grid(True)
     plt.tight_layout()
     try:
         plt.savefig(filename)
-        print(f"Gráfico guardado: {filename}")
     except Exception as e:
         print(f"Error al guardar gráfico '{filename}': {e}")
-    plt.close() # Cerrar la figura para liberar memoria
+    plt.close()
 
 
-# --- Bloque Principal ---
-if __name__ == "__main__":
-    # Crear entorno desde config
-    entorno = Tablero(filas=config.FILAS, columnas=config.COLUMNAS,
-                      num_robots=config.N_ROBOTS, posicion_inicial=config.POSICION_INICIAL)
+# ---------------------------------------------------------------------------
+# NUEVA FUNCIÓN ENVOLTORIO PARA UNA SESIÓN DE ENTRENAMIENTO COMPLETA
+# ---------------------------------------------------------------------------
+def run_training_session(params: dict):
+    """
+    Función principal para ejecutar una sesión de entrenamiento completa,
+    incluyendo creación de entorno, entrenamiento, ploteo y evaluación opcional.
+    """
+    session_name = params.get("EXPERIMENT_NAME", f"unnamed_session_{time.strftime('%Y%m%d-%H%M%S')}")
+    results_base_folder = params.get("RESULTS_FOLDERNAME", "results_default_session")
 
-    # Entrenar y obtener resultados y ruta
-    q_tables_finales, metrics_data, results_dir = entrenar(
+    print(f"\n--- Iniciando Sesión de Entrenamiento: {session_name} ---")
+    print(f"--- Guardando en subcarpeta de: {results_base_folder} ---")
+    print(f"  Config: F={params['FILAS']} C={params['COLUMNAS']} R={params['N_ROBOTS']} | Episodes: {params['NUM_EPISODIOS']}")
+    print(f"  Hyperparams: A={params['ALPHA']:.5f} G={params['GAMMA']:.5f} ED={params['EPSILON_DECAY']:.5f}")
+    if params.get('RANDOM_SEED') is not None:
+        print(f"  Random Seed: {params['RANDOM_SEED']}")
+
+    # --- Configuración de Semilla Aleatoria ---
+    seed = params.get("RANDOM_SEED")
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        # Si Tablero u otros componentes usan 'random' y necesitan ser sembrados, hacerlo aquí.
+        # Ejemplo: if hasattr(Tablero, 'seed_global_random'): Tablero.seed_global_random(seed)
+
+    # --- Crear Entorno ---
+    pos_inicial_config = params.get("POSICION_INICIAL")
+    if isinstance(pos_inicial_config, str): # Por si se pasa como JSON string desde línea de cmd (no es el caso aquí)
+        if pos_inicial_config.lower() == "none": pos_inicial_config = None
+        else:
+            try: pos_inicial_config = json.loads(pos_inicial_config)
+            except: pos_inicial_config = None # Fallback
+
+    entorno = Tablero(filas=params["FILAS"], columnas=params["COLUMNAS"],
+                      num_robots=params["N_ROBOTS"], posicion_inicial=pos_inicial_config)
+
+    # --- Ejecutar Entrenamiento ---
+    # La función 'entrenar' se encarga de la subcarpeta específica del 'experiment_name'
+    q_tables_finales, metrics_data, trial_output_dir = entrenar(
         env=entorno,
-        num_episodios=config.NUM_EPISODIOS,
-        max_steps=config.MAX_STEPS_PER_EPISODE,
-        alpha=config.ALPHA, gamma=config.GAMMA,
-        epsilon_start=config.EPSILON_START, epsilon_end=config.EPSILON_END,
-        epsilon_decay=config.EPSILON_DECAY,
-        log_interval=config.EPISODIOS_PARA_LOG,
-        # cargar_desde=config.CARGAR_QTABLES_FILENAME, # Añadir si se usa
-        guardar_q_tables_file=config.GUARDAR_QTABLES_FILENAME.split('/')[-1] # Solo nombre archivo
+        num_episodios=params["NUM_EPISODIOS"],
+        max_steps=params["MAX_STEPS_PER_EPISODE"],
+        alpha=params["ALPHA"], gamma=params["GAMMA"],
+        epsilon_start=params["EPSILON_START"], epsilon_end=params["EPSILON_END"],
+        epsilon_decay=params["EPSILON_DECAY"],
+        log_interval=params["EPISODIOS_PARA_LOG"],
+        results_foldername=results_base_folder, # Carpeta del grupo de experimento
+        experiment_name=session_name,           # Nombre del trial/sesión específica
+        cargar_desde=params.get("CARGAR_QTABLES_FILENAME"),
+        guardar_q_tables_file=params["GUARDAR_QTABLES_FILENAME"].split('/')[-1] if params.get("GUARDAR_QTABLES_FILENAME") else "q_tables_final.pkl"
     )
 
-    # --- Generar y Guardar Gráficos Individuales ---
-    if config.GENERAR_GRAFICO and metrics_data and results_dir:
-        print("\n--- Generando Gráficos ---")
+    print(f"--- Entrenamiento para '{session_name}' finalizado. Resultados en: {trial_output_dir} ---")
+
+    # --- Generar Gráficos Individuales (si se especifica en params) ---
+    if params.get("GENERAR_GRAFICO_INDIVIDUAL") and metrics_data and trial_output_dir:
+        print(f"--- Generando Gráficos Individuales para '{session_name}' ---")
         ep = metrics_data['episodio']
-        win = config.VENTANA_PROMEDIO_MOVIL
+        win = params.get("VENTANA_PROMEDIO_MOVIL", 100)
+        # Usar trial_output_dir que es la carpeta específica de este trial
+        plot_and_save_metric(ep, metrics_data['recompensa_promedio'], 'Recompensa Promedio', 'Recompensa', os.path.join(trial_output_dir, 'plot_recompensa.png'), win)
+        plot_and_save_metric(ep, metrics_data['pasos_por_episodio'], 'Pasos por Episodio', 'Pasos', os.path.join(trial_output_dir, 'plot_pasos.png'), win)
+        plot_and_save_metric(ep, metrics_data['porcentaje_visitadas'], '% Celdas Visitadas', '% Visitadas', os.path.join(trial_output_dir, 'plot_visitadas.png'), win)
+        plot_and_save_metric(ep, metrics_data['tasa_exito_100ep'], f'Tasa Éxito (ventana {params.get("EPISODIOS_PARA_LOG",100)}ep)', 'Tasa Éxito', os.path.join(trial_output_dir, 'plot_exito.png'), win, show_avg=False)
+        plot_and_save_metric(ep, metrics_data['epsilon'], 'Decaimiento Epsilon', 'Epsilon', os.path.join(trial_output_dir, 'plot_epsilon.png'), win, show_avg=False)
+        plot_and_save_metric(ep, metrics_data['td_error_promedio'], 'Error TD Promedio', 'Error TD', os.path.join(trial_output_dir, 'plot_td_error.png'), win)
 
-        plot_and_save_metric(ep, metrics_data['recompensa_promedio'], 'Recompensa Promedio por Episodio',
-                             'Recompensa Prom.', os.path.join(results_dir, 'plot_recompensa.png'), win)
-
-        plot_and_save_metric(ep, metrics_data['pasos_por_episodio'], 'Pasos por Episodio',
-                             'Pasos', os.path.join(results_dir, 'plot_pasos.png'), win)
-
-        plot_and_save_metric(ep, metrics_data['porcentaje_visitadas'], 'Porcentaje de Celdas Visitadas',
-                             '% Visitadas', os.path.join(results_dir, 'plot_visitadas.png'), win)
-
-        plot_and_save_metric(ep, metrics_data['tasa_exito_100ep'], f'Tasa de Éxito ({config.EPISODIOS_PARA_LOG}ep)',
-                             'Tasa Éxito', os.path.join(results_dir, 'plot_exito.png'), win, show_avg=False) # Avg no aplica bien aquí
-
-        plot_and_save_metric(ep, metrics_data['epsilon'], 'Decaimiento de Epsilon',
-                             'Epsilon', os.path.join(results_dir, 'plot_epsilon.png'), win, show_avg=False)
-
-        plot_and_save_metric(ep, metrics_data['td_error_promedio'], 'Error TD Promedio por Episodio',
-                             'Error TD Prom.', os.path.join(results_dir, 'plot_td_error.png'), win)
-
-    # --- Evaluación (sin cambios, excepto usar Q-tables devueltas) ---
-    if config.EVALUAR_AL_FINAL and q_tables_finales:
-        # Reconstruir Q-tables a defaultdict si se cargaron desde pickle y se serializaron
-        q_tables_eval = inicializar_q_tables(entorno.num_robots)
-        # Asumimos que q_tables_finales son los defaultdicts devueltos por entrenar
-        # Si hubieran sido cargados y deserializados como dicts, necesitaríamos convertirlos
-        q_tables_eval = q_tables_finales
-
-        # Reutilizamos la función evaluar_politica (definida localmente o importada)
-        # ... (código de importar o definir evaluar_politica como en la respuesta anterior) ...
-        try:
-             from q_learning_agent import evaluar_politica
-        except ImportError:
-            def evaluar_politica(env: Tablero, q_tables: QTableType, max_steps: int, render: bool = True, pause: float = 0.3):
-                    print("\n--- Evaluación de la Política Aprendida (Epsilon = 0) ---")
-                    estado = env.reset()
-                    if render:
-                        try:
-                            env.render()
-                            time.sleep(pause * 2)
-                        except AttributeError:
-                            print("Advertencia: El método render() no está implementado en Tablero.")
-                            render = False # Desactivar render si no existe
-
-                    done = False
-                    paso = 0
-                    recompensa_total_eval = np.zeros(env.num_robots)
-
-                    while not done and paso < max_steps:
-                        paso += 1
-                        acciones = elegir_acciones(q_tables, estado, 0.0, env)
-                        estado_siguiente, done = env.step(acciones)
-                        recompensas = calcular_recompensas(estado, estado_siguiente, acciones, done, env)
-                        recompensa_total_eval += recompensas
-                        estado = estado_siguiente
-
-                        if render:
-                            print(f"\nPaso {paso} | Acciones: {acciones} | Recompensas: [{', '.join(f'{r:.2f}' for r in recompensas)}]")
-                            env.render()
-                            if pause > 0: time.sleep(pause)
-
-                    print("\n--- Fin Evaluación ---")
-                    print(f"Terminado en {paso} pasos. Done={done}")
-                    print(f"Recompensa total: {recompensa_total_eval} (Promedio: {np.mean(recompensa_total_eval):.2f})")
-                    print(f"Celdas visitadas: {len(estado[1])}/{env.total_celdas}")
-
+    # --- Evaluación (si se especifica en params) ---
+    if params.get("EVALUAR_SESION_FINAL") and q_tables_finales:
+        print(f"\n--- Evaluando Política para '{session_name}' (Epsilon = 0) ---")
+        # La función evaluar_politica ya está importada de q_learning_agent
         evaluar_politica(
-            env=entorno,
-            q_tables=q_tables_eval, # Usar las Q-tables potencialmente convertidas
-            max_steps=config.MAX_STEPS_EVALUACION,
-            render=config.RENDER_EVALUACION,
-            pause=config.PAUSA_RENDER_EVAL
+            env=entorno, # Reutilizar el entorno, se reseteará internamente
+            q_tables=q_tables_finales,
+            max_steps=params.get("MAX_STEPS_EVALUACION", params["MAX_STEPS_PER_EPISODE"] * 2),
+            render=params.get("RENDER_EVALUACION", False), # Usualmente False para la batería
+            pause=params.get("PAUSA_RENDER_EVAL", 0.1)
         )
+    print(f"--- Sesión '{session_name}' Completada. ---")
+
+
+# --- Bloque Principal (si train.py se ejecuta directamente) ---
+if __name__ == "__main__":
+    print("### Ejecutando train.py directamente usando configuración de config.py ###")
+
+    # Construir diccionario de parámetros desde config.py
+    # Los nombres de las claves deben coincidir con los que espera run_training_session
+    direct_run_params = {
+        "FILAS": config.FILAS, "COLUMNAS": config.COLUMNAS, "N_ROBOTS": config.N_ROBOTS,
+        "POSICION_INICIAL": config.POSICION_INICIAL,
+        "ALPHA": config.ALPHA, "GAMMA": config.GAMMA,
+        "EPSILON_START": config.EPSILON_START, "EPSILON_END": config.EPSILON_END,
+        "EPSILON_DECAY": config.EPSILON_DECAY,
+        "NUM_EPISODIOS": config.NUM_EPISODIOS,
+        "MAX_STEPS_PER_EPISODE": config.MAX_STEPS_PER_EPISODE,
+        "EPISODIOS_PARA_LOG": config.EPISODIOS_PARA_LOG,
+        "GUARDAR_QTABLES_FILENAME": config.GUARDAR_QTABLES_FILENAME,
+        "CARGAR_QTABLES_FILENAME": config.CARGAR_QTABLES_FILENAME, # Puede ser None
+        "VENTANA_PROMEDIO_MOVIL": config.VENTANA_PROMEDIO_MOVIL,
+        # Parámetros específicos de la sesión/batería con defaults para ejecución directa:
+        "RESULTS_FOLDERNAME": "results_direct_run", # Carpeta diferente para no mezclar con la batería
+        "EXPERIMENT_NAME": f"direct_run_{time.strftime('%Y%m%d-%H%M%S')}", # Nombre único para el trial
+        "RANDOM_SEED": None, # O un entero si quieres reproducibilidad en ejecuciones directas
+        "GENERAR_GRAFICO_INDIVIDUAL": config.GENERAR_GRAFICO, # Controla plots individuales
+        "EVALUAR_SESION_FINAL": config.EVALUAR_AL_FINAL,       # Controla evaluación al final
+        "MAX_STEPS_EVALUACION": config.MAX_STEPS_EVALUACION,
+        "RENDER_EVALUACION": config.RENDER_EVALUACION,
+        "PAUSA_RENDER_EVAL": config.PAUSA_RENDER_EVAL
+    }
+
+    # Crear el directorio base para la ejecución directa si no existe
+    # La subcarpeta del trial se creará dentro de entrenar() -> run_training_session()
+    os.makedirs(direct_run_params["RESULTS_FOLDERNAME"], exist_ok=True)
+
+    run_training_session(direct_run_params)
+
+    print("### Ejecución directa de train.py finalizada. ###")
